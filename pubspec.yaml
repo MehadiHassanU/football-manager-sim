@@ -1,0 +1,49 @@
+name: football_manager_sim
+description: A hyper-realistic football manager simulation game built in Flutter.
+publish_to: 'none'
+version: 0.1.0
+
+environment:
+  sdk: '>=3.2.0 <4.0.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+  # State Management
+  flutter_riverpod: ^2.5.1
+  riverpod_annotation: ^2.3.3
+  # Routing
+  go_router: ^14.2.0
+  # Local Storage
+  hive: ^2.2.3
+  hive_flutter: ^1.1.0
+  path_provider: ^2.1.5
+  # CSV Parsing
+  csv: ^6.0.0
+  # JSON Serialization
+  json_annotation: ^4.9.0
+  # UI / Animation
+  rive: ^0.13.5
+  shimmer: ^3.0.0
+  # Utilities
+  uuid: ^4.4.0
+  cupertino_icons: ^1.0.8
+  fl_chart: ^0.71.0
+  window_manager: ^0.5.2
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^5.0.0
+  build_runner: ^2.4.13
+  json_serializable: ^6.8.0
+  riverpod_generator: ^2.4.0
+  mockito: ^5.4.4
+  hive_generator: ^2.0.1
+
+flutter:
+  uses-material-design: true
+  assets:
+    - lib/data/assets/images/
+    - lib/data/assets/sounds/
+    - lib/data/csv/
