@@ -1,6 +1,5 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:football_manager_sim/screens/match/match_screen.dart';
-import 'package:flutter/material.dart';
 
 void main() {
   group('MatchScreen', () {

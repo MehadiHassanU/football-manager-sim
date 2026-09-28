@@ -152,13 +152,23 @@ class Player {
     this.injuryReturnDate,
     this.contractExpiry,
     Map<String, dynamic>? hiddenAttributes,
-  }) : hiddenAttributes = hiddenAttributes ?? {
-          'potential': ovr + Random().nextInt(5),
-          'personality': ['Stable', 'Driven', 'Charismatic', 'Temperamental']
-              [Random().nextInt(4)],
-          'leadership': Random().nextInt(100),
-          'adaptability': Random().nextInt(100),
-        };
+    Random? random,
+  }) : hiddenAttributes = hiddenAttributes ??
+            _rollHiddenAttributes(ovr, random ?? Random());
+
+  /// Rolls the attributes that are not present in the CSV dataset.
+  ///
+  /// Extracted from the initialiser list so a seeded [Random] can be injected,
+  /// which makes generated squads reproducible. Reproducibility is what save
+  /// round-trip and match-engine tests depend on; the previous inline
+  /// `Random()` literals made every construction non-deterministic.
+  static Map<String, dynamic> _rollHiddenAttributes(int ovr, Random random) => {
+        'potential': ovr + random.nextInt(5),
+        'personality':
+            const ['Stable', 'Driven', 'Charismatic', 'Temperamental'][random.nextInt(4)],
+        'leadership': random.nextInt(100),
+        'adaptability': random.nextInt(100),
+      };
 
   Map<String, dynamic> toJson() => {
     'name': name, 'id': id, 'nationality': nationality,

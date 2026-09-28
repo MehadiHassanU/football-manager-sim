@@ -7,15 +7,15 @@ class SettingsScreen extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final sackable = ref.watch(sackablePercentProvider);
     final ffpEnabled = ref.watch(ffpEnabledProvider);
     final difficulty = ref.watch(difficultyProvider);
     final isSacking = ref.watch(isSackingEnabledProvider);
     final commentary = ref.watch(commentaryEnabledProvider);
     final commentaryAudio = ref.watch(commentaryAudioEnabledProvider);
     final crowdNoise = ref.watch(crowdNoiseEnabledProvider);
-    final matchSpeed = ref.watch(matchSpeedProvider);
-    final commentaryLevel = ref.watch(commentaryLevelProvider);
+    // NOTE: sackablePercent, matchSpeed and commentaryLevel providers exist but
+    // have no widget on this screen yet. Their reads were removed rather than
+    // wired to dead UI; they return with the Stage 7 settings rebuild.
 
     return Scaffold(
       appBar: AppBar(title: const Text('Settings')),

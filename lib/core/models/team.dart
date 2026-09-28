@@ -1,6 +1,3 @@
-import 'package:flutter/material.dart';
-import 'package:flutter_riverpod/flutter_riverpod.dart';
-import '../constants/game_constants.dart';
 import 'player.dart';
 
 class Team {

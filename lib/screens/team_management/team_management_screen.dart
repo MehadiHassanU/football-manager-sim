@@ -1,5 +1,4 @@
 import 'package:flutter/material.dart';
-import 'package:flutter/scheduler.dart' show TickerProviderStateMixin;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/models/player.dart';

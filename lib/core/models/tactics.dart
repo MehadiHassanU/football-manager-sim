@@ -1,5 +1,5 @@
-import 'package:flutter/material.dart';
 import 'package:meta/meta.dart';
+
 import '../constants/tactic_definitions.dart';
 import 'player.dart';
 

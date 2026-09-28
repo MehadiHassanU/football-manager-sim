@@ -1,5 +1,3 @@
-import 'package:meta/meta.dart';
-
 class SeasonState {
   final String leagueId;
   final int currentMatchday;
@@ -24,7 +22,12 @@ class SeasonState {
 
   bool get isPostSeason => currentMatchday >= totalMatchdays;
 
-  bool get isActive => !isPreSeason && !isPostSeason && !isWinterBreak;
+  /// A season is live once matchdays have begun and before they finish.
+  ///
+  /// The calendar is the source of truth: [isPreSeason] is a persisted phase
+  /// flag that callers mutate, so it can contradict [currentMatchday]. Deriving
+  /// activity from the matchday counter keeps the three states consistent.
+  bool get isActive => currentMatchday > 0 && !isPostSeason && !isWinterBreak;
 
   int get matchdayNumber => currentMatchday + 1;
 }

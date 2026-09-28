@@ -85,7 +85,7 @@ bool canPlayPosition(String primaryPos, String targetPos) {
   final alternatives = primaryToAlternatives[primaryPos] ?? [];
   if (alternatives.contains(targetPos)) return true;
   // Check modifier key exists
-  final key = '${primaryPos}_${targetPos}';
+  final key = '${primaryPos}_$targetPos';
   if (positionStatModifiers.containsKey(key)) return true;
   if (positionStatModifiers.containsKey('GK_OUTFIELD') && targetPos == 'GK') return true;
   return false;
@@ -93,7 +93,7 @@ bool canPlayPosition(String primaryPos, String targetPos) {
 
 int getPositionModifier(String primaryPos, String targetPos, String stat) {
   if (primaryPos == targetPos) return 0;
-  final key = '${primaryPos}_${targetPos}';
+  final key = '${primaryPos}_$targetPos';
   final modifiers = positionStatModifiers[key];
   if (modifiers != null && modifiers.containsKey(stat)) {
     return modifiers[stat]!;

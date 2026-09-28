@@ -13,12 +13,25 @@ class SaveService {
   static const String _teamsBox = 'teams_box';
   static const String _managerBox = 'manager_box';
   static const String _seasonBox = 'season_box';
+  static const String _metaBox = 'save_meta_box';
 
-  /// Opens the Hive boxes and registers the generated type adapters.
+  /// Schema version of the save format this build writes.
+  ///
+  /// Hive has no built-in migration path: type adapters read fields by numeric
+  /// key, so removing or reinterpreting a field silently corrupts older saves.
+  /// Stamping the version is what lets a future build detect a mismatch and run
+  /// a migration instead of crashing on a stale adapter. Bump this on every
+  /// incompatible change and add a branch to [init]'s compatibility check.
+  static const int schemaVersion = 1;
+
+  /// Opens the Hive boxes, registers adapters, and validates the save version.
   ///
   /// [storageDirectory] pins the storage location. Production passes nothing and
   /// defers to `path_provider`, while tests pass a temporary directory so they
   /// never depend on platform channels.
+  ///
+  /// Throws [StateError] when an existing save was written by a *newer* schema,
+  /// because downgrading would lose fields this build cannot understand.
   Future<void> init({String? storageDirectory}) async {
     if (storageDirectory == null) {
       await Hive.initFlutter();
@@ -26,6 +39,27 @@ class SaveService {
       Hive.init(storageDirectory);
     }
     _registerAdapters();
+
+    final stored = await storedSchemaVersion();
+    if (stored != null && stored > schemaVersion) {
+      throw StateError(
+        'Save uses schema version $stored but this build only understands '
+        'up to $schemaVersion. Refusing to open it to avoid data loss.',
+      );
+    }
+    await _stampSchemaVersion();
+  }
+
+  /// The schema version recorded in an existing save, or `null` when the save
+  /// has never been written by a version-aware build.
+  Future<int?> storedSchemaVersion() async {
+    final box = await Hive.openBox<dynamic>(_metaBox);
+    return box.get('schemaVersion') as int?;
+  }
+
+  Future<void> _stampSchemaVersion() async {
+    final box = await Hive.openBox<dynamic>(_metaBox);
+    await box.put('schemaVersion', schemaVersion);
   }
 
   void _registerAdapters() {
@@ -76,10 +110,6 @@ class SaveService {
   Future<SeasonState?> loadSeason() async {
     final box = await Hive.openBox<SeasonState>(_seasonBox);
     return box.get('current');
-  }
-
-  Future<void> saveToDisk() async {
-    await savePlayers(await loadPlayers());
   }
 
   Future<void> close() async {

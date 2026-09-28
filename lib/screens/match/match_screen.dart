@@ -1,7 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-import '../../core/models/match.dart';
 import '../../core/models/player.dart';
 import '../../core/services/match_simulator_service.dart';
 import '../../providers/match_providers.dart';

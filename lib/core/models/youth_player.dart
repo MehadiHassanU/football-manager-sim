@@ -1,6 +1,4 @@
 import 'dart:math';
-import 'package:flutter/material.dart';
-import 'package:meta/meta.dart';
 
 class YouthPlayer {
   String name;
@@ -21,9 +19,15 @@ class YouthPlayer {
     required this.nationality,
     this.isPromoted = false,
     Map<String, dynamic>? hiddenAttributes,
-  }) : hiddenAttributes = hiddenAttributes ?? {
-          'personality': ['Stable', 'Driven', 'Charismatic', 'Temperamental']
-              [Random().nextInt(4)],
-          'leadership': Random().nextInt(100),
-        };
+    Random? random,
+  }) : hiddenAttributes = hiddenAttributes ??
+            _rollHiddenAttributes(random ?? Random());
+
+  /// See `Player._rollHiddenAttributes` -- seeded injection keeps youth intake
+  /// reproducible so academy generation can be asserted in tests.
+  static Map<String, dynamic> _rollHiddenAttributes(Random random) => {
+        'personality':
+            const ['Stable', 'Driven', 'Charismatic', 'Temperamental'][random.nextInt(4)],
+        'leadership': random.nextInt(100),
+      };
 }

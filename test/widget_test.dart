@@ -9,7 +9,11 @@ void main() {
     await tester.pumpWidget(
       const ProviderScope(child: FootballManagerSimApp()),
     );
-    await tester.pumpAndSettle();
+    // The startup screen shows an indeterminate CircularProgressIndicator, which
+    // animates forever, so pumpAndSettle() can never settle and always times
+    // out. A single pump renders the first frame, which is all these assertions
+    // need.
+    await tester.pump();
 
     expect(find.text('Football Manager Sim'), findsOneWidget);
     expect(find.text('Skip'), findsOneWidget);
