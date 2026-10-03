@@ -40,6 +40,14 @@ class FinancialService {
     return (base * ageFactor * positionFactor).round();
   }
 
+  /// Rough per-match gate receipts from capacity and reputation.
+  double estimateGateReceipts(Team team) {
+    final avgTicket = 35 + team.reputation * 0.35;
+    final attendance =
+        team.stadiumCapacity * (0.55 + (team.fanTrust / 100) * 0.4);
+    return attendance * avgTicket;
+  }
+
   Map<String, dynamic> generateFinancialReport(Team team) {
     final wageBill = calculateWageBill(team);
     final ffpRatio = calculateFFPRatio(team);

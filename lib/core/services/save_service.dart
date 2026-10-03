@@ -112,6 +112,22 @@ class SaveService {
     return box.get('current');
   }
 
+  /// Stores a JSON-encodable blob in the meta box (schema v1 addendum used
+  /// for data that has no dedicated adapter: youth academy, form history).
+  Future<void> saveJson(String key, Map<String, dynamic> value) async {
+    final box = await Hive.openBox<dynamic>(_metaBox);
+    await box.put(key, value);
+  }
+
+  /// Reads a JSON blob previously written by [saveJson].
+  /// Returns `null` when the key does not exist.
+  Future<Map<String, dynamic>?> loadJson(String key) async {
+    final box = await Hive.openBox<dynamic>(_metaBox);
+    final raw = box.get(key);
+    if (raw == null) return null;
+    return Map<String, dynamic>.from(raw as Map);
+  }
+
   Future<void> close() async {
     await Hive.close();
   }

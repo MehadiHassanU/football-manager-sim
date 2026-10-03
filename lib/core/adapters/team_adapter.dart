@@ -26,8 +26,11 @@ class TeamAdapter implements TypeAdapter<Team> {
       badgeUrl: fields[9] as String,
       reputation: fields[10] as int,
       fanTrust: fields[11] as int,
-      squad: (fields[12] as List).map((d) => Player.fromJson(d as Map<String, dynamic>)).toList(),
-      youthAcademy: (fields[13] as List).map((d) => Player.fromJson(d as Map<String, dynamic>)).toList(),
+      // Hive does not preserve generic type arguments on nested plain maps:
+      // each entry deserializes as Map<dynamic, dynamic>, so casting it
+      // directly to Map<String, dynamic> throws and breaks career restore.
+      squad: (fields[12] as List).map((d) => Player.fromJson(Map<String, dynamic>.from(d as Map))).toList(),
+      youthAcademy: (fields[13] as List).map((d) => Player.fromJson(Map<String, dynamic>.from(d as Map))).toList(),
       leaguePosition: fields[14] as int,
       points: fields[15] as int,
       matchesPlayed: fields[16] as int,

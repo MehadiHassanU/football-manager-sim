@@ -44,5 +44,11 @@ app.*.map.json
 /android/app/profile
 /android/app/release
 
+# Gradle build output (root /build/ only covers the Flutter one)
+/android/build/
+
 # Widget Preview related
 .widget_preview/
+
+# Freebuff agent metadata
+.freebuff/

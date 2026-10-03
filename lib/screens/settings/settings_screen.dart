@@ -1,63 +1,269 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import '../../providers/settings_providers.dart';
+import 'package:go_router/go_router.dart';
 
-class SettingsScreen extends ConsumerWidget {
+import '../../providers/career_session_provider.dart';
+import '../../providers/settings_providers.dart';
+import '../../ui/ui.dart';
+
+class SettingsScreen extends ConsumerStatefulWidget {
   const SettingsScreen({super.key});
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  ConsumerState<SettingsScreen> createState() => _SettingsScreenState();
+}
+
+class _SettingsScreenState extends ConsumerState<SettingsScreen> {
+  bool _saving = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final ref = this.ref;
+    final hasCareer = ref.watch(careerSessionProvider) != null;
     final ffpEnabled = ref.watch(ffpEnabledProvider);
     final difficulty = ref.watch(difficultyProvider);
     final isSacking = ref.watch(isSackingEnabledProvider);
     final commentary = ref.watch(commentaryEnabledProvider);
     final commentaryAudio = ref.watch(commentaryAudioEnabledProvider);
     final crowdNoise = ref.watch(crowdNoiseEnabledProvider);
-    // NOTE: sackablePercent, matchSpeed and commentaryLevel providers exist but
-    // have no widget on this screen yet. Their reads were removed rather than
-    // wired to dead UI; they return with the Stage 7 settings rebuild.
+    final matchSpeed = ref.watch(matchSpeedProvider);
+    final commentaryLevel = ref.watch(commentaryLevelProvider);
+    final sackablePercent = ref.watch(sackablePercentProvider);
+
+    Future<void> changed() => saveAllSettings(ref);
 
     return Scaffold(
       appBar: AppBar(title: const Text('Settings')),
       body: ListView(
         padding: const EdgeInsets.all(16),
         children: [
-          const Text('Game Settings', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
-          SwitchListTile(
-            title: const Text('Sack Enabled'),
-            value: isSacking,
-            onChanged: (v) => ref.read(isSackingEnabledProvider.notifier).state = v,
+          const SectionHeader(title: 'Gameplay'),
+          Card(
+            child: Column(
+              children: [
+                // Full-width segmented control below the label: squeezing it
+                // into a ListTile's trailing slot wraps long labels like
+                // "Normal" and breaks the layout.
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Text('Difficulty'),
+                      Text('How tough the AI opposition plays',
+                          style: Theme.of(context).textTheme.bodySmall),
+                      const SizedBox(height: 10),
+                      SizedBox(
+                        width: double.infinity,
+                        child: SegmentedButton<String>(
+                          segments: const [
+                            ButtonSegment(value: 'Easy', label: Text('Easy')),
+                            ButtonSegment(
+                                value: 'Normal', label: Text('Normal')),
+                            ButtonSegment(value: 'Hard', label: Text('Hard')),
+                          ],
+                          selected: {difficulty},
+                          onSelectionChanged: (selection) {
+                            ref.read(difficultyProvider.notifier).state =
+                                selection.first;
+                            changed();
+                          },
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                SwitchListTile(
+                  title: const Text('Manager sacking'),
+                  subtitle: const Text('Board can sack you'),
+                  value: isSacking,
+                  onChanged: (v) {
+                    ref.read(isSackingEnabledProvider.notifier).state = v;
+                    changed();
+                  },
+                ),
+                ListTile(
+                  title: const Text('Sack risk'),
+                  subtitle: Slider(
+                    value: sackablePercent,
+                    min: 0,
+                    max: 100,
+                    divisions: 20,
+                    label: '${sackablePercent.round()}%',
+                    onChanged: (v) {
+                      ref.read(sackablePercentProvider.notifier).state = v;
+                      changed();
+                    },
+                  ),
+                  trailing: Text('${sackablePercent.round()}%'),
+                ),
+                SwitchListTile(
+                  title: const Text('FFP enforcement'),
+                  subtitle: const Text('Financial Fair Play rules'),
+                  value: ffpEnabled,
+                  onChanged: (v) {
+                    ref.read(ffpEnabledProvider.notifier).state = v;
+                    changed();
+                  },
+                ),
+              ],
+            ),
           ),
-          SwitchListTile(
-            title: const Text('FFP Enabled'),
-            value: ffpEnabled,
-            onChanged: (v) => ref.read(ffpEnabledProvider.notifier).state = v,
+          const SectionHeader(title: 'Match presentation'),
+          Card(
+            child: Column(
+              children: [
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Text('Match speed'),
+                      Text('A match takes ~60s at normal speed',
+                          style: Theme.of(context).textTheme.bodySmall),
+                      const SizedBox(height: 10),
+                      SizedBox(
+                        width: double.infinity,
+                        child: SegmentedButton<String>(
+                          segments: const [
+                            ButtonSegment(value: 'slow', label: Text('Slow')),
+                            ButtonSegment(
+                                value: 'normal', label: Text('Normal')),
+                            ButtonSegment(value: 'fast', label: Text('Fast')),
+                          ],
+                          selected: {matchSpeed},
+                          onSelectionChanged: (selection) {
+                            ref.read(matchSpeedProvider.notifier).state =
+                                selection.first;
+                            changed();
+                          },
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Text('Commentary level'),
+                      Text(
+                          commentaryLevel == 'all'
+                              ? 'Every event'
+                              : 'Key events only',
+                          style: Theme.of(context).textTheme.bodySmall),
+                      const SizedBox(height: 10),
+                      SizedBox(
+                        width: double.infinity,
+                        child: SegmentedButton<String>(
+                          segments: const [
+                            ButtonSegment(
+                                value: 'keyEvents', label: Text('Key')),
+                            ButtonSegment(value: 'all', label: Text('All')),
+                          ],
+                          selected: {commentaryLevel},
+                          onSelectionChanged: (selection) {
+                            ref.read(commentaryLevelProvider.notifier).state =
+                                selection.first;
+                            changed();
+                          },
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
           ),
-          ListTile(
-            title: const Text('Difficulty'),
-            subtitle: Text(difficulty),
-            onTap: () {
-              final options = ['Easy', 'Normal', 'Hard'];
-              final idx = options.indexOf(difficulty);
-              ref.read(difficultyProvider.notifier).state = options[(idx + 1) % options.length];
-            },
+          const SectionHeader(title: 'Audio'),
+          Card(
+            child: Column(
+              children: [
+                SwitchListTile(
+                  title: const Text('Commentary'),
+                  value: commentary,
+                  onChanged: (v) {
+                    ref.read(commentaryEnabledProvider.notifier).state = v;
+                    changed();
+                  },
+                ),
+                SwitchListTile(
+                  title: const Text('Commentary audio'),
+                  value: commentaryAudio,
+                  onChanged: (v) {
+                    ref.read(commentaryAudioEnabledProvider.notifier).state = v;
+                    changed();
+                  },
+                ),
+                SwitchListTile(
+                  title: const Text('Crowd noise'),
+                  value: crowdNoise,
+                  onChanged: (v) {
+                    ref.read(crowdNoiseEnabledProvider.notifier).state = v;
+                    changed();
+                  },
+                ),
+              ],
+            ),
           ),
-          SwitchListTile(
-            title: const Text('Commentary'),
-            value: commentary,
-            onChanged: (v) => ref.read(commentaryEnabledProvider.notifier).state = v,
-          ),
+          if (hasCareer) ...[
+            const SectionHeader(title: 'Career'),
+            Card(
+              child: ListTile(
+                leading: const Icon(Icons.save_outlined),
+                title: const Text('Save career now'),
+                subtitle: const Text(
+                    'Manually persist your club, squad and season progress'),
+                trailing: _saving
+                    ? const SizedBox(
+                        width: 20,
+                        height: 20,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : const Icon(Icons.chevron_right),
+                onTap: _saving
+                    ? null
+                    : () async {
+                        // Capture the messenger before awaiting so no
+                        // BuildContext is used across the async gap.
+                        final messenger = ScaffoldMessenger.of(context);
+                        setState(() => _saving = true);
+                        final ok = await saveCareerNow(ref);
+                        if (!mounted) return;
+                        setState(() => _saving = false);
+                        messenger.showSnackBar(
+                          SnackBar(
+                            content: Text(ok
+                                ? 'Career saved'
+                                : 'Save failed — check device storage'),
+                          ),
+                        );
+                      },
+              ),
+            ),
+          ],
           const SizedBox(height: 16),
-          const Text('Audio', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
-          SwitchListTile(
-            title: const Text('Commentary Audio'),
-            value: commentaryAudio,
-            onChanged: (v) => ref.read(commentaryAudioEnabledProvider.notifier).state = v,
+          const SectionHeader(title: 'About'),
+          Card(
+            child: Column(
+              children: [
+                ListTile(
+                  leading: const Icon(Icons.privacy_tip_outlined),
+                  title: const Text('Privacy Policy'),
+                  subtitle: const Text('How your data is handled'),
+                  trailing: const Icon(Icons.chevron_right),
+                  onTap: () => context.go('/privacy'),
+                ),
+              ],
+            ),
           ),
-          SwitchListTile(
-            title: const Text('Crowd Noise'),
-            value: crowdNoise,
-            onChanged: (v) => ref.read(crowdNoiseEnabledProvider.notifier).state = v,
+          const SizedBox(height: 24),
+          Center(
+            child: Text(
+              'Settings are saved automatically',
+              style: Theme.of(context).textTheme.labelSmall,
+            ),
           ),
         ],
       ),

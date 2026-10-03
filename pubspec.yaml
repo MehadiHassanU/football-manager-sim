@@ -27,7 +27,6 @@ dependencies:
   # Utilities
   uuid: ^4.4.0
   cupertino_icons: ^1.0.8
-  fl_chart: ^0.71.0
   # Imported directly by core/models/tactics.dart for @immutable. It was
   # previously reachable only transitively via flutter/foundation, which
   # triggered depend_on_referenced_packages once core stopped importing

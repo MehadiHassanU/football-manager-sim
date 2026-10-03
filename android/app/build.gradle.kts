@@ -7,9 +7,9 @@ plugins {
 android {
     namespace = "com.example.football_manager_sim"
     compileSdk = flutter.compileSdkVersion
-    // Use the NDK already installed in this environment; Flutter 3.47.5 defaults
-    // to 28.2, but this machine has a complete 27.1 installation available.
-    ndkVersion = "27.1.12297006"
+    // Pinned to the NDK actually installed in this environment (sdk/ndk/30.0.16248370).
+    // The older 27.1 pin was removed -- that NDK is no longer present on this machine.
+    ndkVersion = "30.0.16248370"
 
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
