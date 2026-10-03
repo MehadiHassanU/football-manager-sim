@@ -4,7 +4,10 @@ class Team {
   final String id;
   final String name;
   final String shortName;
-  final String leagueId;
+
+  /// Mutable because a club changes division when it is promoted or relegated
+  /// at the end of a season.
+  String leagueId;
   final String country;
   final String stadiumName;
   final int stadiumCapacity;
@@ -78,39 +81,64 @@ class Team {
   List<Player> get starters => squad.where((p) => p.fitness > 45).toList();
 
   Map<String, dynamic> toJson() => {
-    'id': id, 'name': name, 'shortName': shortName,
-    'leagueId': leagueId, 'country': country,
-    'stadiumName': stadiumName, 'stadiumCapacity': stadiumCapacity,
-    'budget': budget, 'transferBudget': transferBudget,
-    'color': color, 'badgeUrl': badgeUrl,
-    'reputation': reputation, 'fanTrust': fanTrust,
-    'squad': squad.map((p) => p.toJson()).toList(),
-    'youthAcademy': youthAcademy.map((p) => p.toJson()).toList(),
-    'leaguePosition': leaguePosition, 'points': points,
-    'matchesPlayed': matchesPlayed, 'wins': wins,
-    'draws': draws, 'losses': losses,
-    'goalsFor': goalsFor, 'goalsAgainst': goalsAgainst,
-    'totalWages': totalWages, 'revenue': revenue,
-    'sackablePercent': sackablePercent, 'fanLoyalty': fanLoyalty,
-  };
+        'id': id,
+        'name': name,
+        'shortName': shortName,
+        'leagueId': leagueId,
+        'country': country,
+        'stadiumName': stadiumName,
+        'stadiumCapacity': stadiumCapacity,
+        'budget': budget,
+        'transferBudget': transferBudget,
+        'color': color,
+        'badgeUrl': badgeUrl,
+        'reputation': reputation,
+        'fanTrust': fanTrust,
+        'squad': squad.map((p) => p.toJson()).toList(),
+        'youthAcademy': youthAcademy.map((p) => p.toJson()).toList(),
+        'leaguePosition': leaguePosition,
+        'points': points,
+        'matchesPlayed': matchesPlayed,
+        'wins': wins,
+        'draws': draws,
+        'losses': losses,
+        'goalsFor': goalsFor,
+        'goalsAgainst': goalsAgainst,
+        'totalWages': totalWages,
+        'revenue': revenue,
+        'sackablePercent': sackablePercent,
+        'fanLoyalty': fanLoyalty,
+      };
 
   factory Team.fromJson(Map<String, dynamic> json) => Team(
-    id: json['id'], name: json['name'], shortName: json['shortName'],
-    leagueId: json['leagueId'], country: json['country'],
-    stadiumName: json['stadiumName'], stadiumCapacity: json['stadiumCapacity'],
-    budget: json['budget'], transferBudget: json['transferBudget'],
-    color: json['color'], badgeUrl: json['badgeUrl'],
-    reputation: json['reputation'], fanTrust: json['fanTrust'],
-    squad: (json['squad'] as List).map((d) => Player.fromJson(d)).toList(),
-    youthAcademy: (json['youthAcademy'] as List)
-        .map((d) => Player.fromJson(d))
-        .toList(),
-    leaguePosition: json['leaguePosition'], points: json['points'],
-    matchesPlayed: json['matchesPlayed'], wins: json['wins'],
-    draws: json['draws'], losses: json['losses'],
-    goalsFor: json['goalsFor'], goalsAgainst: json['goalsAgainst'],
-    totalWages: json['totalWages'], revenue: json['revenue'],
-    sackablePercent: json['sackablePercent'],
-    fanLoyalty: json['fanLoyalty'],
-  );
+        id: json['id'],
+        name: json['name'],
+        shortName: json['shortName'],
+        leagueId: json['leagueId'],
+        country: json['country'],
+        stadiumName: json['stadiumName'],
+        stadiumCapacity: json['stadiumCapacity'],
+        budget: json['budget'],
+        transferBudget: json['transferBudget'],
+        color: json['color'],
+        badgeUrl: json['badgeUrl'],
+        reputation: json['reputation'],
+        fanTrust: json['fanTrust'],
+        squad: (json['squad'] as List).map((d) => Player.fromJson(d)).toList(),
+        youthAcademy: (json['youthAcademy'] as List)
+            .map((d) => Player.fromJson(d))
+            .toList(),
+        leaguePosition: json['leaguePosition'],
+        points: json['points'],
+        matchesPlayed: json['matchesPlayed'],
+        wins: json['wins'],
+        draws: json['draws'],
+        losses: json['losses'],
+        goalsFor: json['goalsFor'],
+        goalsAgainst: json['goalsAgainst'],
+        totalWages: json['totalWages'],
+        revenue: json['revenue'],
+        sackablePercent: json['sackablePercent'],
+        fanLoyalty: json['fanLoyalty'],
+      );
 }

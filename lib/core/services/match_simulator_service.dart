@@ -50,14 +50,21 @@ class MatchSimulatorService {
           homeGoals++;
           final scorer = _randomPlayer(homeSquad);
           events.add(MatchEvent(
-            type: 'goal', team: 'home', player: scorer.name,
-            description: 'GOAL! $scorer.name scores! $homeSquad first vs $awaySquad',
-            minute: minute, homeScore: homeGoals, awayScore: awayGoals,
+            type: 'goal',
+            team: 'home',
+            player: scorer.name,
+            description:
+                'GOAL! $scorer.name scores! $homeSquad first vs $awaySquad',
+            minute: minute,
+            homeScore: homeGoals,
+            awayScore: awayGoals,
           ));
         } else if (rng.nextDouble() < 0.15) {
           final player = _randomPlayer(homeSquad);
           events.add(MatchEvent(
-            type: 'chance', team: 'home', player: player.name,
+            type: 'chance',
+            team: 'home',
+            player: player.name,
             description: '$player.name has a chance!',
             minute: minute,
           ));
@@ -67,14 +74,20 @@ class MatchSimulatorService {
           awayGoals++;
           final scorer = _randomPlayer(awaySquad);
           events.add(MatchEvent(
-            type: 'goal', team: 'away', player: scorer.name,
+            type: 'goal',
+            team: 'away',
+            player: scorer.name,
             description: 'GOAL! $scorer.name equalizes!',
-            minute: minute, homeScore: homeGoals, awayScore: awayGoals,
+            minute: minute,
+            homeScore: homeGoals,
+            awayScore: awayGoals,
           ));
         } else if (rng.nextDouble() < 0.15) {
           final player = _randomPlayer(awaySquad);
           events.add(MatchEvent(
-            type: 'chance', team: 'away', player: player.name,
+            type: 'chance',
+            team: 'away',
+            player: player.name,
             description: '$player.name has a chance!',
             minute: minute,
           ));
@@ -84,14 +97,19 @@ class MatchSimulatorService {
       if (minute < matchMinutes) {
         final commentary = _generateCommentary(minute, homeGoals, awayGoals);
         events.add(MatchEvent(
-          type: 'commentary', team: 'home', player: '',
-          description: commentary, minute: minute,
+          type: 'commentary',
+          team: 'home',
+          player: '',
+          description: commentary,
+          minute: minute,
         ));
       }
     }
 
-    final homePlayerRatings = _generateRatings(homeSquad, homeGoals, homePower > awayPower ? 1 : 0);
-    final awayPlayerRatings = _generateRatings(awaySquad, 0, awayPower > homePower ? 1 : 0);
+    final homePlayerRatings =
+        _generateRatings(homeSquad, homeGoals, homePower > awayPower ? 1 : 0);
+    final awayPlayerRatings =
+        _generateRatings(awaySquad, 0, awayPower > homePower ? 1 : 0);
 
     return MatchResult(
       homeTeam: 'Home',
@@ -104,6 +122,41 @@ class MatchSimulatorService {
       awayMomentum: awayMomentum,
       fullTimeCommentary: 'Full-time: $homeGoals - $awayGoals',
     );
+  }
+
+  /// Simulates a match between two clubs from overall squad strength alone.
+  ///
+  /// Used to resolve the fixtures in a round that the user is not involved in,
+  /// which is what makes the league table move. Running the full event loop for
+  /// every other club would produce commentary nobody reads, so this returns
+  /// just the scoreline. Goals are drawn from a Poisson distribution whose mean
+  /// rises with the attacker's strength and falls with the defender's, so a
+  /// strong favourite wins more often than it loses.
+  (int, int) simulateScore({
+    required double homeStrength,
+    required double awayStrength,
+    required Random rng,
+  }) {
+    // Strength is a 20-100 rating; map it to an expected-goals rate.
+    final edge = (homeStrength - awayStrength) / 100.0;
+    final homeLambda = (1.35 + edge * 1.1).clamp(0.15, 4.5);
+    final awayLambda = (1.15 - edge * 1.1).clamp(0.15, 4.5);
+    return (
+      _poisson(homeLambda, rng),
+      _poisson(awayLambda, rng),
+    );
+  }
+
+  /// Knuth's method: cheap, bounded and fine for the small lambdas used here.
+  int _poisson(double lambda, Random rng) {
+    final threshold = exp(-lambda);
+    var k = 0;
+    var product = rng.nextDouble();
+    while (product > threshold && k < 12) {
+      k += 1;
+      product *= rng.nextDouble();
+    }
+    return k - 1;
   }
 
   int _getMinuteIncrement(Tactic? home, Tactic? away) {
@@ -125,11 +178,20 @@ class MatchSimulatorService {
 
     if (tactic != null) {
       switch (tactic.playingStyle) {
-        case PlayingStyle.attacking: total *= 1.05; break;
-        case PlayingStyle.defensive: total *= 0.95; break;
-        case PlayingStyle.possession: total *= 1.03; break;
-        case PlayingStyle.counterAttack: total *= 1.02; break;
-        default: break;
+        case PlayingStyle.attacking:
+          total *= 1.05;
+          break;
+        case PlayingStyle.defensive:
+          total *= 0.95;
+          break;
+        case PlayingStyle.possession:
+          total *= 1.03;
+          break;
+        case PlayingStyle.counterAttack:
+          total *= 1.02;
+          break;
+        default:
+          break;
       }
     }
     return total.clamp(20.0, 100.0);
@@ -139,7 +201,8 @@ class MatchSimulatorService {
     return squad[rng.nextInt(squad.length)];
   }
 
-  List<PlayerRating> _generateRatings(List<Player> squad, int playerGoals, int teamWon) {
+  List<PlayerRating> _generateRatings(
+      List<Player> squad, int playerGoals, int teamWon) {
     return squad.take(11).map((p) {
       int rating = p.ovr ~/ 10;
       rating += rng.nextInt(5) - 2;

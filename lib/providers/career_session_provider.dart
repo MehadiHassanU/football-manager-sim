@@ -5,6 +5,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:uuid/uuid.dart';
 
+import '../core/models/fixture.dart';
 import '../core/models/manager.dart';
 import '../core/models/match.dart';
 import '../core/models/player.dart';
@@ -13,6 +14,7 @@ import '../core/models/team.dart';
 import '../core/models/tactics.dart';
 import '../core/models/youth_player.dart';
 import '../core/services/financial_service.dart';
+import '../core/services/match_simulator_service.dart';
 import '../core/services/save_service.dart';
 import 'data_providers.dart';
 
@@ -55,12 +57,12 @@ final shortlistProvider = StateProvider<Set<int>>((ref) => {});
 
 /// Outgoing offers made by the user (persisted in the career blob).
 /// Each entry: playerId, playerName, fee, wage, askingFee, status, date.
-final transferOffersProvider = StateProvider<List<Map<String, dynamic>>>(
-    (ref) => []);
+final transferOffersProvider =
+    StateProvider<List<Map<String, dynamic>>>((ref) => []);
 
 /// Named saved tactics: [{'name': String, 'tactic': Tactic-as-json}].
-final savedTacticsProvider = StateProvider<List<Map<String, dynamic>>>(
-    (ref) => []);
+final savedTacticsProvider =
+    StateProvider<List<Map<String, dynamic>>>((ref) => []);
 
 /// Key under which career-only data (no dedicated Hive adapter) is stored in
 /// the save meta box: youth academy, form history, starting XI, shortlist,
@@ -77,20 +79,21 @@ void startNewCareer(
   final leagueRivals = db == null
       ? <Team>[]
       : db.teams.where((t) => t.leagueId == team.leagueId).toList();
-  final fixtures =
-      leagueRivals.length >= 2 ? buildFixtures(leagueRivals) : <String>[];
+  // A real double round-robin: one round list per matchday, so a 20-club
+  // league plays 38 matchdays instead of the N-1 the old flat list implied.
+  final rounds = buildRounds(
+    [for (final t in leagueRivals) t.id],
+    rng: Random(),
+  );
 
   final season = SeasonState(
     leagueId: team.leagueId,
     currentMatchday: 0,
-    totalMatchdays: fixtures.isNotEmpty ? fixtures.length ~/ leagueRivals.length : 38,
     currentYear: DateTime.now().year,
     isPreSeason: false,
     isWinterBreak: false,
-    standings: {
-      for (final t in leagueRivals) t.id: 0,
-    },
-    matchdayFixtures: fixtures,
+    records: {for (final t in leagueRivals) t.id: LeagueRecord()},
+    rounds: rounds,
   );
   final session = CareerSession(manager: manager, team: team, season: season);
   ref.read(careerSessionProvider.notifier).state = session;
@@ -146,8 +149,14 @@ Future<bool> tryRestoreCareer(WidgetRef ref) async {
   try {
     final manager = await SaveService().loadManager();
     final team = await SaveService().loadTeam(manager?.teamId ?? '');
-    final season = await SaveService().loadSeason();
-    if (manager == null || team == null || season == null) return false;
+    final savedSeason = await SaveService().loadSeason();
+    if (manager == null || team == null || savedSeason == null) return false;
+
+    final season = migrateSeasonSchedule(
+      savedSeason,
+      team,
+      ref.read(playerDatabaseProvider).valueOrNull,
+    );
 
     final session = CareerSession(manager: manager, team: team, season: season);
 
@@ -200,6 +209,47 @@ Future<bool> tryRestoreCareer(WidgetRef ref) async {
   }
 }
 
+/// Rebuilds a real schedule for a schema v1 save.
+///
+/// v1 stored a flat, shuffled list of "home|away" strings with no round
+/// structure, so it cannot say who the user was playing in any given matchday.
+/// Rather than resurrect a schedule that produces arbitrary opponents, a new
+/// round-robin is generated. Results already banked in [SeasonState.records]
+/// are kept; the old points map is only used to recover the club set.
+///
+/// Public so the migration can be exercised without a widget tree.
+SeasonState migrateSeasonSchedule(
+  SeasonState season,
+  Team team,
+  PlayerDatabase? db,
+) {
+  if (season.rounds.isNotEmpty) return season;
+
+  final rivals = db == null
+      ? <Team>[]
+      : db.teams.where((t) => t.leagueId == team.leagueId).toList();
+  if (rivals.length < 2) return season;
+
+  final rounds = buildRounds([for (final t in rivals) t.id], rng: Random(7));
+  debugPrint('[SAVE] Migrated a schema v1 save: rebuilt ${rounds.length} '
+      'matchdays for ${rivals.length} clubs (had '
+      '${season.legacyFixturePairs.length} ungrouped pairs).');
+
+  return SeasonState(
+    leagueId: season.leagueId,
+    // A v1 counter could exceed the new schedule length; clamp so the season
+    // is not born already finished.
+    currentMatchday: season.currentMatchday.clamp(0, rounds.length),
+    currentYear: season.currentYear,
+    isPreSeason: season.isPreSeason,
+    isWinterBreak: false,
+    records: season.records.isEmpty
+        ? {for (final t in rivals) t.id: LeagueRecord()}
+        : season.records,
+    rounds: rounds,
+  );
+}
+
 /// True when a save file exists (used by Main Menu's Continue button).
 ///
 /// Invalidated after every successful [saveCareerNow] so a freshly created
@@ -214,25 +264,37 @@ final hasSaveProvider = FutureProvider<bool>((ref) async {
   }
 });
 
-/// Applies a match result to the career session: standings, form, budget.
-void applyMatchResult(WidgetRef ref, MatchResult result, {required bool userIsHome}) {
+/// Applies a played match to the season.
+///
+/// Home and away now come from the fixture rather than from the caller, which
+/// is what stops gate receipts being credited on away matches. Every other
+/// fixture in the same round is then simulated, so the league table actually
+/// moves instead of only the user's club and its opponent gaining points.
+void applyMatchResult(WidgetRef ref, MatchResult result) {
   final session = ref.read(careerSessionProvider);
   if (session == null) return;
 
+  final season = session.season;
+  final round = season.currentMatchday;
+  final fixture = season.userFixtureForRound(round, session.team.id);
+
+  // An away fixture (or a restored save with no schedule) falls back to home,
+  // which only affects the label: the scoreline is attributed by the fixture.
+  final userIsHome = fixture?.isHomeFor(session.team.id) ?? true;
   final userGoals = userIsHome ? result.homeGoals : result.awayGoals;
   final oppGoals = userIsHome ? result.awayGoals : result.homeGoals;
   final points = userGoals > oppGoals ? 3 : (userGoals == oppGoals ? 1 : 0);
-  final opponentId = _opponentId(session, userIsHome);
 
   session.userResults.add(points);
   if (session.userResults.length > 10) session.userResults.removeAt(0);
 
-  session.season.standings[session.team.id] =
-      (session.season.standings[session.team.id] ?? 0) + points;
-  if (opponentId != null) {
-    session.season.standings[opponentId] =
-        (session.season.standings[opponentId] ?? 0) + (3 - points);
+  if (fixture != null && !fixture.played) {
+    fixture.record(result.homeGoals, result.awayGoals);
+    _applyResultToRecords(season, fixture);
   }
+
+  // Everything else in the round, so rivals move too.
+  _simulateRemainingFixtures(ref, session, round);
 
   session.team.matchesPlayed += 1;
   session.team.goalsFor += userGoals;
@@ -244,31 +306,26 @@ void applyMatchResult(WidgetRef ref, MatchResult result, {required bool userIsHo
   } else {
     session.team.losses += 1;
   }
-  session.team.points =
-      session.team.wins * 3 + session.team.draws;
-  session.team.leaguePosition = _leaguePosition(session);
 
-  // Season progression is tracked on the copy stored in the provider.
+  final advanced = round + 1;
   final updatedSeason = SeasonState(
-    leagueId: session.season.leagueId,
-    currentMatchday: session.season.currentMatchday + 1,
-    totalMatchdays: session.season.totalMatchdays,
-    currentYear: session.season.currentYear,
+    leagueId: season.leagueId,
+    currentMatchday: advanced,
+    currentYear: season.currentYear,
     isPreSeason: false,
-    isWinterBreak: session.season.isWinterBreak,
-    standings: session.season.standings,
-    matchdayFixtures: session.season.matchdayFixtures,
+    // The league pauses at the midpoint; the manager resumes from Home.
+    isWinterBreak: advanced == season.winterBreakRound,
+    records: season.records,
+    rounds: season.rounds,
   );
-  final updated = CareerSession(
-    manager: session.manager,
-    team: session.team,
-    season: updatedSeason,
-    startXI: session.startXI,
-  );
-  updated.tactic = session.tactic;
-  updated.userResults.addAll(session.userResults);
 
-  // Gate receipts for home matches.
+  final updated = _rebuildSession(session, updatedSeason);
+  updated.team.points = season.records[session.team.id]?.points ?? 0;
+  // Position comes from the ordered table, which ranks the club itself
+  // rather than a points value, so tied clubs no longer alias.
+  updated.team.leaguePosition = updatedSeason.positionOf(session.team.id);
+
+  // Gate receipts are credited on home games only.
   if (userIsHome) {
     final gate = FinancialService().estimateGateReceipts(session.team);
     session.team.revenue += gate;
@@ -276,7 +333,135 @@ void applyMatchResult(WidgetRef ref, MatchResult result, {required bool userIsHo
   }
 
   ref.read(careerSessionProvider.notifier).state = updated;
+  _persist(ref, updated);
+}
 
+/// Rebuilds the immutable session around a new [SeasonState], carrying every
+/// piece of career state across.
+///
+/// The academy list used to be dropped here, which silently emptied the youth
+/// academy after every single match.
+CareerSession _rebuildSession(CareerSession session, SeasonState season) {
+  final updated = CareerSession(
+    manager: session.manager,
+    team: session.team,
+    season: season,
+    tactic: session.tactic,
+    startXI: session.startXI,
+  );
+  updated.userResults.addAll(session.userResults);
+  updated.youthPlayers.addAll(session.youthPlayers);
+  return updated;
+}
+
+/// Folds a played fixture into both clubs' league records.
+void _applyResultToRecords(SeasonState season, Fixture fixture) {
+  final records = season.records;
+  final home = records.putIfAbsent(fixture.homeTeamId, LeagueRecord.new);
+  final away = records.putIfAbsent(fixture.awayTeamId, LeagueRecord.new);
+  home.record(fixture.homeGoals, fixture.awayGoals);
+  away.record(fixture.awayGoals, fixture.homeGoals);
+}
+
+/// Simulates every fixture in [round] that has not been played yet.
+///
+/// This is what makes the table move: without it only the user's club and its
+/// opponent ever gained points, and every other club sat on zero.
+///
+/// The RNG is seeded from the league, year and round rather than left
+/// wall-clock random, so a save restored mid-round produces the same rival
+/// results it would have produced had it never been closed.
+void simulateRound(
+  SeasonState season,
+  int round, {
+  Map<String, double> strengths = const {},
+}) {
+  final pending =
+      season.fixturesForRound(round).where((f) => !f.played).toList();
+  if (pending.isEmpty) return;
+
+  final seed = '${season.leagueId}:${season.currentYear}:$round'.hashCode.abs();
+  final rng = Random(seed);
+  final sim = MatchSimulatorService(rng: rng);
+
+  for (final fixture in pending) {
+    final (homeGoals, awayGoals) = sim.simulateScore(
+      homeStrength: strengths[fixture.homeTeamId] ?? 60.0,
+      awayStrength: strengths[fixture.awayTeamId] ?? 60.0,
+      rng: rng,
+    );
+    fixture.record(homeGoals, awayGoals);
+    _applyResultToRecords(season, fixture);
+  }
+}
+
+/// Simulates the rest of the current round using real squad strengths.
+void _simulateRemainingFixtures(
+  WidgetRef ref,
+  CareerSession session,
+  int round,
+) {
+  final db = ref.read(playerDatabaseProvider).valueOrNull;
+  final strengths = <String, double>{
+    if (db != null)
+      for (final t in db.teams) t.id: _squadStrength(t),
+  };
+  simulateRound(session.season, round, strengths: strengths);
+}
+
+/// Average squad rating, used as the strength input for rival fixtures.
+double _squadStrength(Team team) {
+  if (team.squad.isEmpty) return 60.0;
+  final total = team.squad.fold<int>(0, (sum, p) => sum + p.ovr);
+  return total / team.squad.length;
+}
+
+/// Advances a matchday the club has no fixture for, which happens when the
+/// league has an odd number of clubs.
+///
+/// The other clubs in the round still play, so their records advance and the
+/// table keeps moving instead of stalling on the user's bye.
+void advancePastBye(WidgetRef ref) {
+  final session = ref.read(careerSessionProvider);
+  if (session == null) return;
+  final round = session.season.currentMatchday;
+  if (session.season.userFixtureForRound(round, session.team.id) != null) {
+    return;
+  }
+
+  _simulateRemainingFixtures(ref, session, round);
+
+  final advanced = round + 1;
+  final season = SeasonState(
+    leagueId: session.season.leagueId,
+    currentMatchday: advanced,
+    currentYear: session.season.currentYear,
+    isPreSeason: false,
+    isWinterBreak: advanced == session.season.winterBreakRound,
+    records: session.season.records,
+    rounds: session.season.rounds,
+  );
+  final updated = _rebuildSession(session, season);
+  updated.team.leaguePosition = season.positionOf(session.team.id);
+  ref.read(careerSessionProvider.notifier).state = updated;
+  _persist(ref, updated);
+}
+
+/// Clears the winter break so the paused matchday can be played.
+void resumeFromWinterBreak(WidgetRef ref) {
+  final session = ref.read(careerSessionProvider);
+  if (session == null || !session.season.isWinterBreak) return;
+  final season = SeasonState(
+    leagueId: session.season.leagueId,
+    currentMatchday: session.season.currentMatchday,
+    currentYear: session.season.currentYear,
+    isPreSeason: false,
+    isWinterBreak: false,
+    records: session.season.records,
+    rounds: session.season.rounds,
+  );
+  final updated = _rebuildSession(session, season);
+  ref.read(careerSessionProvider.notifier).state = updated;
   _persist(ref, updated);
 }
 
@@ -288,11 +473,50 @@ void addYouthProspect(WidgetRef ref, {int count = 1}) {
   final session = ref.read(careerSessionProvider);
   if (session == null) return;
   final rng = Random();
-  const first = ['Lucas', 'Marco', 'Diego', 'Pablo', 'Ivan', 'Kai', 'Noah',
-    'Adam', 'Luka', 'Daniel', 'Mateo', 'Sven', 'Tomas', 'Andre'];
-  const last = ['Vega', 'Moreno', 'Silva', 'Costa', 'Ivanov', 'Berg', 'Okafor',
-    'Mitchell', 'Petrovic', 'Novak', 'Herrera', 'Lindgren', 'Diallo', 'Rossi'];
-  const positions = ['ST', 'CM', 'CB', 'LB', 'RB', 'GK', 'LW', 'RW', 'DM', 'AM'];
+  const first = [
+    'Lucas',
+    'Marco',
+    'Diego',
+    'Pablo',
+    'Ivan',
+    'Kai',
+    'Noah',
+    'Adam',
+    'Luka',
+    'Daniel',
+    'Mateo',
+    'Sven',
+    'Tomas',
+    'Andre'
+  ];
+  const last = [
+    'Vega',
+    'Moreno',
+    'Silva',
+    'Costa',
+    'Ivanov',
+    'Berg',
+    'Okafor',
+    'Mitchell',
+    'Petrovic',
+    'Novak',
+    'Herrera',
+    'Lindgren',
+    'Diallo',
+    'Rossi'
+  ];
+  const positions = [
+    'ST',
+    'CM',
+    'CB',
+    'LB',
+    'RB',
+    'GK',
+    'LW',
+    'RW',
+    'DM',
+    'AM'
+  ];
 
   for (var i = 0; i < count; i++) {
     final potential = 68 + rng.nextInt(25); // 68..92
@@ -328,23 +552,40 @@ void promoteYouthPlayer(WidgetRef ref, YouthPlayer youth) {
     nationality: youth.nationality,
     age: youth.age,
     ovr: attrs,
-    pac: attrs, sho: attrs,
-    pas: attrs, dri: attrs,
-    def: attrs, phy: attrs,
-    acceleration: attrs, sprintSpeed: attrs,
-    positioning: attrs, finishing: attrs,
-    shotPower: attrs, longShots: attrs,
-    volleys: attrs, penalties: attrs,
-    vision: attrs, crossing: attrs,
-    freeKickAccuracy: attrs, shortPassing: attrs,
-    longPassing: attrs, curve: attrs,
-    agility: attrs, balance: attrs,
-    reactions: attrs, ballControl: attrs,
-    composure: attrs, interceptions: attrs,
-    headingAccuracy: attrs, defAwareness: attrs,
-    standingTackle: attrs, slidingTackle: attrs,
-    jumping: attrs, staminaStat: attrs,
-    strength: attrs, aggression: attrs,
+    pac: attrs,
+    sho: attrs,
+    pas: attrs,
+    dri: attrs,
+    def: attrs,
+    phy: attrs,
+    acceleration: attrs,
+    sprintSpeed: attrs,
+    positioning: attrs,
+    finishing: attrs,
+    shotPower: attrs,
+    longShots: attrs,
+    volleys: attrs,
+    penalties: attrs,
+    vision: attrs,
+    crossing: attrs,
+    freeKickAccuracy: attrs,
+    shortPassing: attrs,
+    longPassing: attrs,
+    curve: attrs,
+    agility: attrs,
+    balance: attrs,
+    reactions: attrs,
+    ballControl: attrs,
+    composure: attrs,
+    interceptions: attrs,
+    headingAccuracy: attrs,
+    defAwareness: attrs,
+    standingTackle: attrs,
+    slidingTackle: attrs,
+    jumping: attrs,
+    staminaStat: attrs,
+    strength: attrs,
+    aggression: attrs,
     primaryPosition: youth.position,
     alternativePositions: const [],
     preferredFoot: 'Right',
@@ -358,8 +599,7 @@ void promoteYouthPlayer(WidgetRef ref, YouthPlayer youth) {
   );
   player.hiddenAttributes['personality'] =
       youth.hiddenAttributes['personality'];
-  player.hiddenAttributes['leadership'] =
-      youth.hiddenAttributes['leadership'];
+  player.hiddenAttributes['leadership'] = youth.hiddenAttributes['leadership'];
   session.team.squad.add(player);
   session.youthPlayers.remove(youth);
   _bumpState(ref);
@@ -430,7 +670,9 @@ void setTransferListing(
     player.hiddenAttributes['askingPrice'] =
         askingPrice ?? FinancialService().calculateTransferValue(player);
   } else {
-    player.hiddenAttributes..remove('transferListed')..remove('askingPrice');
+    player.hiddenAttributes
+      ..remove('transferListed')
+      ..remove('askingPrice');
   }
   _bumpState(ref);
   _persist(ref, session);
@@ -549,32 +791,153 @@ void _bumpState(WidgetRef ref) {
   notifier.state = notifier.state;
 }
 
-String? _opponentId(CareerSession session, bool userIsHome) {
-  // The opponent is derived from the fixture list when present.
-  if (session.season.matchdayFixtures.isEmpty) return null;
-  final fixture =
-      session.season.matchdayFixtures[session.season.currentMatchday];
-  final parts = fixture.split('|');
-  if (parts.length != 2) return null;
-  return userIsHome ? parts[1] : parts[0];
+/// What happened when a season rolled over.
+class SeasonOutcome {
+  const SeasonOutcome({
+    required this.year,
+    required this.position,
+    required this.points,
+    required this.movement,
+  });
+
+  final int year;
+  final int position;
+  final int points;
+
+  /// `promoted`, `relegated` or `stayed`.
+  final String movement;
 }
 
-int _leaguePosition(CareerSession session) {
-  final standings = session.season.standings;
-  final sorted = standings.values.toList()..sort((a, b) => b.compareTo(a));
-  final myPoints = standings[session.team.id] ?? 0;
-  return sorted.indexOf(myPoints) + 1;
-}
+/// Closes the season and starts the next one.
+///
+/// Returns null when the season is still in progress. The club moves up or
+/// down a division only when the database actually holds a neighbouring
+/// league in the same country; leagues are ordered by average squad strength
+/// because the shipped data has no explicit tier column.
+SeasonOutcome? rollIntoNextSeason(WidgetRef ref) {
+  final session = ref.read(careerSessionProvider);
+  if (session == null) return null;
+  final season = session.season;
+  if (!season.isPostSeason) return null;
 
-/// Builds a fixtures list for a league (round-robin, one leg for simplicity).
-List<String> buildFixtures(List<Team> leagueTeams) {
-  final fixtures = <String>[];
-  for (var i = 0; i < leagueTeams.length; i++) {
-    for (var j = i + 1; j < leagueTeams.length; j++) {
-      fixtures.add('${leagueTeams[i].id}|${leagueTeams[j].id}');
-      fixtures.add('${leagueTeams[j].id}|${leagueTeams[i].id}');
+  final team = session.team;
+  final position = season.positionOf(team.id);
+  final points = season.records[team.id]?.points ?? team.points;
+  final movement = _resolveMovement(ref, session, position);
+
+  if (movement != _movementStayed) {
+    final target = _neighbourLeague(ref, session, movement);
+    if (target != null) {
+      team.leagueId = target;
+      // The database derives leagues from the clubs in them, so the shared
+      // instance must move too or the market would show a stale league.
+      final db = ref.read(playerDatabaseProvider).valueOrNull;
+      final mirror = db?.teams.where((t) => t.id == team.id).firstOrNull;
+      if (mirror != null && !identical(mirror, team)) {
+        mirror.leagueId = target;
+      }
     }
   }
-  fixtures.shuffle();
-  return fixtures;
+
+  // Reset the season's own numbers; the club's identity and squad carry over.
+  team.points = 0;
+  team.wins = 0;
+  team.draws = 0;
+  team.losses = 0;
+  team.matchesPlayed = 0;
+  team.goalsFor = 0;
+  team.goalsAgainst = 0;
+  team.leaguePosition = 10;
+
+  final db = ref.read(playerDatabaseProvider).valueOrNull;
+  final rivals = db == null
+      ? <Team>[]
+      : db.teams.where((t) => t.leagueId == team.leagueId).toList();
+
+  final nextSeason = SeasonState(
+    leagueId: team.leagueId,
+    currentMatchday: 0,
+    currentYear: season.currentYear + 1,
+    isPreSeason: false,
+    isWinterBreak: false,
+    records: {for (final t in rivals) t.id: LeagueRecord()},
+    rounds: buildRounds([for (final t in rivals) t.id], rng: Random()),
+  );
+
+  final updated = _rebuildSession(session, nextSeason);
+  updated.userResults.clear();
+  ref.read(careerSessionProvider.notifier).state = updated;
+  ref.read(lastMatchResultProvider.notifier).state = null;
+  _persist(ref, updated);
+
+  return SeasonOutcome(
+    year: nextSeason.currentYear,
+    position: position,
+    points: points,
+    movement: movement,
+  );
+}
+
+const String _movementStayed = 'stayed';
+const String _movementPromoted = 'promoted';
+const String _movementRelegated = 'relegated';
+
+/// Whether the club earned a place in the promotion or relegation zone.
+///
+/// Promotion and relegation use the usual four-club band. A club that finishes
+/// in the band but has no adjacent division in the shipped database simply
+/// stays put rather than being moved somewhere invented.
+String _resolveMovement(WidgetRef ref, CareerSession session, int position) {
+  final table = session.season.table();
+  if (table.length < 4 || position <= 0) return _movementStayed;
+  final ladder = _countryLeagueLadder(ref, session);
+  if (ladder.length < 2) return _movementStayed;
+
+  final tier = ladder.indexWhere((l) => l == session.team.leagueId);
+  if (tier < 0) return _movementStayed;
+
+  final band = table.length ~/ 4;
+  if (position <= band && tier > 0) return _movementPromoted;
+  if (position > table.length - band && tier < ladder.length - 1) {
+    return _movementRelegated;
+  }
+  return _movementStayed;
+}
+
+/// Leagues in the club's country ordered strongest first, by average squad
+/// rating. The CSV has no division/tier column, so strength is the only real
+/// signal available for ranking them.
+List<String> _countryLeagueLadder(WidgetRef ref, CareerSession session) {
+  final db = ref.read(playerDatabaseProvider).valueOrNull;
+  if (db == null) return [];
+  final byLeague = <String, List<Team>>{};
+  for (final t in db.teams) {
+    if (t.country == session.team.country) {
+      byLeague.putIfAbsent(t.leagueId, () => []).add(t);
+    }
+  }
+  final scored = <String, double>{};
+  byLeague.forEach((leagueId, clubs) {
+    if (clubs.length < 2) return;
+    final total = clubs.fold<int>(
+      0,
+      (sum, t) => sum + t.squad.fold<int>(0, (s, p) => s + p.ovr),
+    );
+    scored[leagueId] = total / clubs.length;
+  });
+  final ladder = scored.keys.toList()
+    ..sort((a, b) => scored[b]!.compareTo(scored[a]!));
+  return ladder;
+}
+
+/// The league one step in [movement]'s direction, or null when there is none.
+String? _neighbourLeague(
+    WidgetRef ref, CareerSession session, String movement) {
+  final ladder = _countryLeagueLadder(ref, session);
+  final tier = ladder.indexWhere((l) => l == session.team.leagueId);
+  if (tier < 0) return null;
+  final step = movement == _movementPromoted ? -1 : 1;
+  final next = tier + step;
+  if (next < 0 || next >= ladder.length) return null;
+  return ladder[next];
 }

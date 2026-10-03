@@ -245,3 +245,80 @@ List<Override> stubDatabaseOverrides({Random? random}) => <Override>[
       playerDatabaseProvider
           .overrideWith((ref) async => stubPlayerDatabase(random: random)),
     ];
+
+/// A whole league of [clubCount] clubs in one division.
+///
+/// The two-club stub is enough to render screens, but a league needs real
+/// rivals for the schedule and the table to mean anything: with only two clubs
+/// there is no other fixture in a round for the season logic to simulate.
+PlayerDatabase stubLeagueDatabase(int clubCount, {Random? random}) {
+  final rng = random ?? Random(7);
+  final teams = <Team>[];
+  final players = <Player>[];
+  final byTeam = <String, List<Player>>{};
+
+  for (var c = 0; c < clubCount; c++) {
+    final id = 'club_$c';
+    final name = 'Club $c';
+    final squad = <Player>[];
+    for (var i = 0; i < 16; i++) {
+      squad.add(stubPlayer(
+        id: clubCount * 1000 + c * 100 + i,
+        name: '$name $i',
+        position: positionsFor(i),
+        team: name,
+        ovr: 62 + (c % 8),
+        random: rng,
+      ));
+    }
+    players.addAll(squad);
+    byTeam[id] = squad;
+    teams.add(Team(
+      id: id,
+      name: name,
+      shortName: 'C$c',
+      leagueId: 'test_league',
+      country: 'Spain',
+      stadiumName: '$name Park',
+      stadiumCapacity: 30000,
+      budget: 10000000,
+      color: '#00C853',
+      badgeUrl: '',
+      squad: squad,
+    ));
+  }
+
+  return PlayerDatabase(
+    players: players,
+    teams: teams,
+    leagues: [
+      LeagueInfo(
+        id: 'test_league',
+        name: 'Test League',
+        country: 'Spain',
+        teamCount: clubCount,
+      ),
+    ],
+    playersByTeam: byTeam,
+  );
+}
+
+/// A workable shape: one keeper, a back four, a midfield and an attack.
+String positionsFor(int i) => const [
+      'GK',
+      'CB',
+      'CB',
+      'LB',
+      'RB',
+      'CDM',
+      'CM',
+      'CAM',
+      'LW',
+      'RW',
+      'ST',
+      'CF',
+      'LB',
+      'RB',
+      'CM',
+      'ST',
+    ][i % 16];

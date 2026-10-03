@@ -102,7 +102,8 @@ class _MatchScreenState extends ConsumerState<MatchScreen> {
         throw const _MatchValidationException(
             'Your squad is empty. Sign or promote players before kick off.');
       }
-      final userSquad = _startingXi(session.team.squad, session.tactic.formation);
+      final userSquad =
+          _startingXi(session.team.squad, session.tactic.formation);
       if (userSquad.isEmpty) {
         throw const _MatchValidationException(
             'Your starting XI is incomplete. Check your squad.');
@@ -114,28 +115,36 @@ class _MatchScreenState extends ConsumerState<MatchScreen> {
       }
       final userGk = _pickGoalkeeper(session.team.squad) ??
           _fallbackGoalkeeper(session.team.name);
-      final oppGk = _pickGoalkeeper(opponent.squad) ??
-          _fallbackGoalkeeper(opponent.name);
+      final oppGk =
+          _pickGoalkeeper(opponent.squad) ?? _fallbackGoalkeeper(opponent.name);
+
+      // Home and away come from the fixture, so an away match is actually
+      // simulated (and reported) as the away side.
+      final userIsHome = session.season
+              .currentFixtureFor(session.team.id)
+              ?.isHomeFor(session.team.id) ??
+          true;
 
       debugPrint('[MATCH] Simulation started: '
-          '${session.team.name} vs ${opponent.name}');
+          '${session.team.name} vs ${opponent.name} '
+          '(${userIsHome ? 'home' : 'away'})');
       final watch = Stopwatch()..start();
       final result = _sim.simulateMatch(
-        homeGoalkeeper: userGk,
-        homeSquad: userSquad,
-        awayGoalkeeper: oppGk,
-        awaySquad: oppSquad,
-        homeTactic: session.tactic,
+        homeGoalkeeper: userIsHome ? userGk : oppGk,
+        homeSquad: userIsHome ? userSquad : oppSquad,
+        awayGoalkeeper: userIsHome ? oppGk : userGk,
+        awaySquad: userIsHome ? oppSquad : userSquad,
+        homeTactic: userIsHome ? session.tactic : null,
       );
       watch.stop();
       debugPrint(
           '[MATCH] Simulation finished in ${watch.elapsedMilliseconds}ms '
           '(${result.events.length} events, ${result.homeGoals}-${result.awayGoals})');
 
-      // Label the result with the real fixture names.
+      // Label the result with the real fixture names, in home/away order.
       final labeled = MatchResult(
-        homeTeam: session.team.name,
-        awayTeam: opponent.name,
+        homeTeam: userIsHome ? session.team.name : opponent.name,
+        awayTeam: userIsHome ? opponent.name : session.team.name,
         homeGoals: result.homeGoals,
         awayGoals: result.awayGoals,
         events: result.events,
@@ -181,8 +190,9 @@ class _MatchScreenState extends ConsumerState<MatchScreen> {
         timer.cancel();
         return;
       }
-      final minute =
-          ((timer.tick / totalTicks) * matchMinutes).floor().clamp(0, matchMinutes);
+      final minute = ((timer.tick / totalTicks) * matchMinutes)
+          .floor()
+          .clamp(0, matchMinutes);
       setState(() {
         _currentMinute = minute;
         while (_eventsShown < _result!.events.length &&
@@ -205,7 +215,7 @@ class _MatchScreenState extends ConsumerState<MatchScreen> {
 
     final session = ref.read(careerSessionProvider);
     if (session != null) {
-      applyMatchResult(ref, _result!, userIsHome: true);
+      applyMatchResult(ref, _result!);
       ref.read(lastMatchResultProvider.notifier).state = _result;
       ref.read(currentMatchProvider.notifier).state = _result;
     }
@@ -289,7 +299,9 @@ class _MatchScreenState extends ConsumerState<MatchScreen> {
 
   List<double> _momentumAt(List<double> series, int minute) {
     if (series.isEmpty) return [];
-    final upTo = ((minute / matchMinutes) * series.length).floor().clamp(1, series.length);
+    final upTo = ((minute / matchMinutes) * series.length)
+        .floor()
+        .clamp(1, series.length);
     return series.sublist(0, upTo);
   }
 }
@@ -319,7 +331,8 @@ class _PreMatch extends ConsumerWidget {
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            const Icon(Icons.stadium_outlined, size: 56, color: AppTheme.pitchGreen),
+            const Icon(Icons.stadium_outlined,
+                size: 56, color: AppTheme.pitchGreen),
             const SizedBox(height: 16),
             Text('Ready for kick-off?', style: theme.textTheme.titleLarge),
             const SizedBox(height: 8),
@@ -425,7 +438,8 @@ class _LiveMatch extends StatelessWidget {
                       duration: const Duration(milliseconds: 300),
                       child: Text(
                         '${result.homeGoals} - ${result.awayGoals}',
-                        key: ValueKey('${result.homeGoals}-${result.awayGoals}'),
+                        key:
+                            ValueKey('${result.homeGoals}-${result.awayGoals}'),
                         style: theme.textTheme.displaySmall
                             ?.copyWith(fontSize: 36),
                       ),
@@ -588,7 +602,10 @@ class _EventTile extends StatelessWidget {
       'card' => (Icons.style, const Color(0xFFFFB74D)),
       'injury' => (Icons.healing, const Color(0xFFEF5350)),
       'chance' => (Icons.bolt, const Color(0xFF40C4FF)),
-      _ => (Icons.chat_bubble_outline, theme.colorScheme.onSurface.withValues(alpha: 0.3)),
+      _ => (
+          Icons.chat_bubble_outline,
+          theme.colorScheme.onSurface.withValues(alpha: 0.3)
+        ),
     };
 
     return Padding(
@@ -598,8 +615,7 @@ class _EventTile extends StatelessWidget {
         children: [
           SizedBox(
             width: 34,
-            child: Text("${event.minute}'",
-                style: theme.textTheme.labelSmall),
+            child: Text("${event.minute}'", style: theme.textTheme.labelSmall),
           ),
           Icon(icon, size: 18, color: color),
           const SizedBox(width: 10),
@@ -607,7 +623,9 @@ class _EventTile extends StatelessWidget {
             child: Text(
               event.isGoal
                   ? 'GOAL! ${event.player}'
-                  : (event.description.isEmpty ? event.type : event.description),
+                  : (event.description.isEmpty
+                      ? event.type
+                      : event.description),
               style: theme.textTheme.bodyMedium?.copyWith(
                 fontWeight: event.isGoal ? FontWeight.w700 : FontWeight.w400,
               ),
@@ -635,7 +653,8 @@ class _HalfTimeSheet extends StatelessWidget {
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            Text('Half-time team talk', style: Theme.of(context).textTheme.titleLarge),
+            Text('Half-time team talk',
+                style: Theme.of(context).textTheme.titleLarge),
             const SizedBox(height: 16),
             _dropdown<PlayingStyle>(
               context,
@@ -691,9 +710,7 @@ class _HalfTimeSheet extends StatelessWidget {
 
   String _label(String enumSource) {
     final name = enumSource.split('.').last;
-    return name
-        .replaceAllMapped(RegExp(r'([A-Z])'), (m) => ' ${m[1]}')
-        .trim();
+    return name.replaceAllMapped(RegExp(r'([A-Z])'), (m) => ' ${m[1]}').trim();
   }
 }
 
@@ -733,7 +750,8 @@ class _FullTime extends StatelessWidget {
               padding: const EdgeInsets.symmetric(horizontal: 16),
               child: Align(
                 alignment: Alignment.centerLeft,
-                child: Text('Player ratings', style: theme.textTheme.titleMedium),
+                child:
+                    Text('Player ratings', style: theme.textTheme.titleMedium),
               ),
             ),
             Expanded(
@@ -746,7 +764,8 @@ class _FullTime extends StatelessWidget {
                     dense: true,
                     contentPadding: EdgeInsets.zero,
                     leading: PositionChip(position: r.position),
-                    title: Text(r.playerName, style: theme.textTheme.bodyMedium),
+                    title:
+                        Text(r.playerName, style: theme.textTheme.bodyMedium),
                     trailing: Row(
                       mainAxisSize: MainAxisSize.min,
                       children: [
@@ -786,19 +805,22 @@ class _FullTime extends StatelessWidget {
 
 // --- helpers ---
 
+/// The club the user is actually due to play this matchday.
+///
+/// The fixture is the only source of truth. The rival fallback is a safety net
+/// for a save whose club is missing from the database, not a way to pick an
+/// opponent.
 Team? _pickOpponent(CareerSession session, PlayerDatabase db) {
-  final fixtures = session.season.matchdayFixtures;
-  if (fixtures.isNotEmpty) {
-    final index =
-        session.season.currentMatchday.clamp(0, fixtures.length - 1);
-    final parts = fixtures[index].split('|');
-    final opponentId = parts[0] == session.team.id ? parts[1] : parts[0];
+  final opponentId = session.season
+      .currentFixtureFor(session.team.id)
+      ?.opponentOf(session.team.id);
+  if (opponentId != null) {
     final match = db.teams.where((t) => t.id == opponentId).firstOrNull;
     if (match != null) return match;
   }
-  // Fall back to a same-league rival.
   final rivals = db.teams
-      .where((t) => t.leagueId == session.team.leagueId && t.id != session.team.id)
+      .where(
+          (t) => t.leagueId == session.team.leagueId && t.id != session.team.id)
       .toList();
   return rivals.isEmpty ? null : rivals.first;
 }
@@ -825,17 +847,45 @@ Player _fallbackGoalkeeper(String teamName) {
     nationality: 'Unknown',
     age: 27,
     ovr: 68,
-    pac: 60, sho: 40, pas: 55, dri: 55, def: 60, phy: 65,
-    acceleration: 58, sprintSpeed: 58, positioning: 66,
-    finishing: 40, shotPower: 45, longShots: 35, volleys: 35,
-    penalties: 45, vision: 50, crossing: 35, freeKickAccuracy: 30,
-    shortPassing: 55, longPassing: 52, curve: 40, agility: 62,
-    balance: 60, reactions: 68, ballControl: 52, composure: 62,
-    interceptions: 40, headingAccuracy: 55, defAwareness: 60,
-    standingTackle: 42, slidingTackle: 38, jumping: 66,
-    staminaStat: 62, strength: 64, aggression: 50,
-    gkDiving: 68, gkHandling: 66, gkKicking: 60,
-    gkPositioning: 67, gkReflexes: 69,
+    pac: 60,
+    sho: 40,
+    pas: 55,
+    dri: 55,
+    def: 60,
+    phy: 65,
+    acceleration: 58,
+    sprintSpeed: 58,
+    positioning: 66,
+    finishing: 40,
+    shotPower: 45,
+    longShots: 35,
+    volleys: 35,
+    penalties: 45,
+    vision: 50,
+    crossing: 35,
+    freeKickAccuracy: 30,
+    shortPassing: 55,
+    longPassing: 52,
+    curve: 40,
+    agility: 62,
+    balance: 60,
+    reactions: 68,
+    ballControl: 52,
+    composure: 62,
+    interceptions: 40,
+    headingAccuracy: 55,
+    defAwareness: 60,
+    standingTackle: 42,
+    slidingTackle: 38,
+    jumping: 66,
+    staminaStat: 62,
+    strength: 64,
+    aggression: 50,
+    gkDiving: 68,
+    gkHandling: 66,
+    gkKicking: 60,
+    gkPositioning: 67,
+    gkReflexes: 69,
     primaryPosition: 'GK',
     alternativePositions: const [],
     preferredFoot: 'Right',

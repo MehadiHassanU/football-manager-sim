@@ -287,8 +287,11 @@ void main() {
       final season = SeasonState(
         leagueId: 'test_league',
         currentMatchday: 3,
-        totalMatchdays: 38,
-        standings: const {'test_fc': 7, 'rival_fc': 4},
+        currentYear: 2026,
+        records: {
+          'test_fc': LeagueRecord(won: 2, drawn: 1),
+          'rival_fc': LeagueRecord(won: 1, drawn: 1),
+        },
       );
       await save.saveManager(manager);
       await save.saveSeason(season);

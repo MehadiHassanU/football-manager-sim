@@ -1,24 +1,130 @@
-class SeasonState {
-  final String leagueId;
-  final int currentMatchday;
-  final int totalMatchdays;
-  final int currentYear;
-  final bool isPreSeason;
-  final bool isWinterBreak;
-  final Map<String, int> standings; // teamId -> points
-  final List<String> matchdayFixtures; // team pairs
+import 'fixture.dart';
 
+/// One club's season record. Points are derived rather than stored twice, so
+/// the table can never drift from the results behind it.
+class LeagueRecord {
+  LeagueRecord({
+    this.played = 0,
+    this.won = 0,
+    this.drawn = 0,
+    this.lost = 0,
+    this.goalsFor = 0,
+    this.goalsAgainst = 0,
+  });
+
+  int played;
+  int won;
+  int drawn;
+  int lost;
+  int goalsFor;
+  int goalsAgainst;
+
+  int get points => won * 3 + drawn;
+
+  int get goalDifference => goalsFor - goalsAgainst;
+
+  /// Folds one finished match into the record.
+  void record(int scored, int conceded) {
+    played += 1;
+    goalsFor += scored;
+    goalsAgainst += conceded;
+    if (scored > conceded) {
+      won += 1;
+    } else if (scored == conceded) {
+      drawn += 1;
+    } else {
+      lost += 1;
+    }
+  }
+
+  Map<String, dynamic> toJson() => {
+        'played': played,
+        'won': won,
+        'drawn': drawn,
+        'lost': lost,
+        'goalsFor': goalsFor,
+        'goalsAgainst': goalsAgainst,
+      };
+
+  factory LeagueRecord.fromJson(Map<dynamic, dynamic> json) => LeagueRecord(
+        played: (json['played'] as num?)?.toInt() ?? 0,
+        won: (json['won'] as num?)?.toInt() ?? 0,
+        drawn: (json['drawn'] as num?)?.toInt() ?? 0,
+        lost: (json['lost'] as num?)?.toInt() ?? 0,
+        goalsFor: (json['goalsFor'] as num?)?.toInt() ?? 0,
+        goalsAgainst: (json['goalsAgainst'] as num?)?.toInt() ?? 0,
+      );
+}
+
+/// One row of the league table.
+class LeagueStanding {
+  const LeagueStanding({
+    required this.teamId,
+    required this.record,
+    required this.position,
+  });
+
+  final String teamId;
+  final LeagueRecord record;
+  final int position;
+}
+
+class SeasonState {
   SeasonState({
     required this.leagueId,
     this.currentMatchday = 0,
-    this.totalMatchdays = 38,
+    int? totalMatchdays,
     this.currentYear = 2024,
     this.isPreSeason = true,
     this.isWinterBreak = false,
-    Map<String, int>? standings,
-    List<String>? matchdayFixtures,
-  })  : standings = standings ?? {},
-        matchdayFixtures = matchdayFixtures ?? [];
+    Map<String, LeagueRecord>? records,
+    List<List<Fixture>>? rounds,
+    List<String>? legacyFixturePairs,
+  })  : _totalMatchdaysOverride = totalMatchdays,
+        _legacyFixturePairs = legacyFixturePairs ?? const <String>[],
+        rounds = rounds ?? const <List<Fixture>>[],
+        records = records ?? <String, LeagueRecord>{};
+
+  final String leagueId;
+
+  /// Index of the next round to be played. 0 means the season has not started.
+  final int currentMatchday;
+  final int currentYear;
+  final bool isPreSeason;
+  final bool isWinterBreak;
+
+  /// The schedule: one list of fixtures per matchday. This is the single source
+  /// of truth for who plays whom.
+  final List<List<Fixture>> rounds;
+
+  /// Every club's record, keyed by team id.
+  final Map<String, LeagueRecord> records;
+
+  /// Schema v1 stored a flat, shuffled list of "home|away" strings with no
+  /// round structure, which made it impossible to tell who the user was
+  /// actually playing. It is read once so a save can be migrated and is then
+  /// replaced by [rounds]; nothing schedules from it.
+  final List<String> _legacyFixturePairs;
+
+  /// Consulted only when [rounds] is empty, which is the case for a
+  /// default-constructed or freshly migrated season.
+  final int? _totalMatchdaysOverride;
+
+  /// Matchdays in the season, derived from the schedule whenever one exists so
+  /// the counter can never disagree with the fixtures.
+  int get totalMatchdays =>
+      rounds.isNotEmpty ? rounds.length : (_totalMatchdaysOverride ?? 38);
+
+  /// Points per club, derived from the records. There is deliberately no
+  /// constructor parameter for a bare points map: seeding one would produce
+  /// clubs whose points silently read back as zero.
+  Map<String, int> get standings => <String, int>{
+        for (final e in records.entries) e.key: e.value.points,
+      };
+
+  /// The legacy flat fixture list, exposed only so the migration can detect a
+  /// schema v1 save.
+  List<String> get legacyFixturePairs => _legacyFixturePairs;
 
   bool get isPostSeason => currentMatchday >= totalMatchdays;
 
@@ -30,6 +136,80 @@ class SeasonState {
   bool get isActive => currentMatchday > 0 && !isPostSeason && !isWinterBreak;
 
   int get matchdayNumber => currentMatchday + 1;
+
+  /// The round at which the league pauses for winter. Rounds keep counting
+  /// across the break, so this is the midpoint of the schedule.
+  int get winterBreakRound => totalMatchdays ~/ 2;
+
+  /// Whether the season is sitting at the winter break, which is a pause
+  /// rather than a completed matchday: no fixture is played until the manager
+  /// resumes.
+  bool get isWinterBreakRound =>
+      rounds.isNotEmpty && currentMatchday == winterBreakRound;
+
+  /// The fixtures of [round], or an empty list past the end of the season.
+  List<Fixture> fixturesForRound(int round) {
+    if (round < 0 || round >= rounds.length) return const <Fixture>[];
+    return rounds[round];
+  }
+
+  /// The single fixture in [round] that involves [teamId].
+  ///
+  /// Null when the club is not in that round, which happens on a bye when the
+  /// league has an odd number of clubs. This is the only supported way to
+  /// resolve an opponent: the dashboard and the match engine both call it, so
+  /// they cannot disagree about who is being played.
+  Fixture? userFixtureForRound(int round, String teamId) {
+    for (final fixture in fixturesForRound(round)) {
+      if (fixture.involves(teamId)) return fixture;
+    }
+    return null;
+  }
+
+  /// The club's fixture for the round currently being played, if any.
+  Fixture? currentFixtureFor(String teamId) =>
+      userFixtureForRound(currentMatchday, teamId);
+
+  /// Whether the club sits out the round currently being played.
+  bool isByeRound(String teamId) =>
+      rounds.isNotEmpty && currentFixtureFor(teamId) == null;
+
+  /// The league table, best first: points, then goal difference, then goals
+  /// scored, then club id so the order is stable across rebuilds.
+  ///
+  /// Ranking the club rather than a points value is what stops tied clubs from
+  /// aliasing to the same position.
+  List<LeagueStanding> table() {
+    final sorted = records.keys
+        .map((id) =>
+            LeagueStanding(teamId: id, record: records[id]!, position: 0))
+        .toList()
+      ..sort((a, b) {
+        final byPoints = b.record.points.compareTo(a.record.points);
+        if (byPoints != 0) return byPoints;
+        final byGd = b.record.goalDifference.compareTo(a.record.goalDifference);
+        if (byGd != 0) return byGd;
+        final byGoals = b.record.goalsFor.compareTo(a.record.goalsFor);
+        if (byGoals != 0) return byGoals;
+        return a.teamId.compareTo(b.teamId);
+      });
+    return [
+      for (var i = 0; i < sorted.length; i++)
+        LeagueStanding(
+          teamId: sorted[i].teamId,
+          record: sorted[i].record,
+          position: i + 1,
+        ),
+    ];
+  }
+
+  /// The league position of [teamId] (1 = top), or 0 when it is unknown.
+  int positionOf(String teamId) {
+    for (final row in table()) {
+      if (row.teamId == teamId) return row.position;
+    }
+    return 0;
+  }
 }
 
 class TransferOffer {

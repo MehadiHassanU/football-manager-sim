@@ -22,7 +22,11 @@ class SaveService {
   /// Stamping the version is what lets a future build detect a mismatch and run
   /// a migration instead of crashing on a stale adapter. Bump this on every
   /// incompatible change and add a branch to [init]'s compatibility check.
-  static const int schemaVersion = 1;
+  ///
+  /// v2 replaced the flat, shuffled fixture list with real per-round fixtures
+  /// and league records. v1 saves still load; `tryRestoreCareer` detects them
+  /// by the absent schedule and regenerates it.
+  static const int schemaVersion = 2;
 
   /// Opens the Hive boxes, registers adapters, and validates the save version.
   ///
@@ -66,7 +70,9 @@ class SaveService {
     if (!Hive.isAdapterRegistered(0)) Hive.registerAdapter(PlayerAdapter());
     if (!Hive.isAdapterRegistered(1)) Hive.registerAdapter(TeamAdapter());
     if (!Hive.isAdapterRegistered(2)) Hive.registerAdapter(ManagerAdapter());
-    if (!Hive.isAdapterRegistered(3)) Hive.registerAdapter(SeasonStateAdapter());
+    if (!Hive.isAdapterRegistered(3)) {
+      Hive.registerAdapter(SeasonStateAdapter());
+    }
   }
 
   Future<void> savePlayers(List<Player> players) async {

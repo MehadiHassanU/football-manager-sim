@@ -4,11 +4,14 @@ import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:football_manager_sim/core/models/fixture.dart';
 import 'package:football_manager_sim/core/models/manager.dart';
 import 'package:football_manager_sim/core/models/season.dart';
+import 'package:football_manager_sim/providers/data_providers.dart';
 import 'package:football_manager_sim/core/models/youth_player.dart';
 import 'package:football_manager_sim/providers/career_session_provider.dart';
 import 'package:football_manager_sim/screens/career/career_dashboard_screen.dart';
+import 'package:football_manager_sim/screens/league_table/league_table_screen.dart';
 import 'package:football_manager_sim/screens/new_career/new_career_screen.dart';
 import 'package:football_manager_sim/screens/team_management/team_management_screen.dart';
 import 'package:football_manager_sim/screens/transfer_market/transfer_market_screen.dart';
@@ -19,7 +22,20 @@ import '../helpers/test_hive.dart';
 /// The narrowest phone the app claims to support.
 const Size kNarrowPhone = Size(360, 640);
 
-CareerSession _session() {
+/// A season with a real schedule plus the supplied table.
+SeasonState _seasonWithRecords(Map<String, LeagueRecord> records) {
+  final ids = records.keys.toList();
+  return SeasonState(
+    leagueId: 'test_league',
+    currentMatchday: 12,
+    currentYear: 2026,
+    isPreSeason: false,
+    records: records,
+    rounds: buildRounds(ids, rng: Random(2)),
+  );
+}
+
+CareerSession _session({SeasonState? season}) {
   final db = stubPlayerDatabase();
   final team = db.teams.first;
   final youth = YouthPlayer(
@@ -39,13 +55,15 @@ CareerSession _session() {
     manager:
         Manager(name: 'Boss', age: 40, nationality: 'Spain', teamId: team.id),
     team: team,
-    season: SeasonState(
-      leagueId: team.leagueId,
-      currentMatchday: 4,
-      totalMatchdays: 38,
-      standings: {team.id: 7, 'rival_fc': 4},
-      matchdayFixtures: const ['test_fc|rival_fc'],
-    ),
+    season: season ??
+        SeasonState(
+          leagueId: team.leagueId,
+          currentMatchday: 0,
+          currentYear: 2026,
+          isPreSeason: false,
+          records: {team.id: LeagueRecord(), 'rival_fc': LeagueRecord()},
+          rounds: buildRounds([team.id, 'rival_fc'], rng: Random(1)),
+        ),
   );
   session.youthPlayers.add(youth);
   session.userResults.addAll(const [3, 3, 1, 0]);
@@ -74,16 +92,30 @@ void main() {
     });
   });
 
-  Future<void> pumpAtNarrow(WidgetTester tester, Widget child) async {
+  /// Same as [pumpAtNarrow] but with a caller-supplied career, so a test can
+  /// put the season into a particular state.
+  Future<void> pumpSessionAtNarrow(
+    WidgetTester tester,
+    CareerSession session,
+    Widget child, {
+    PlayerDatabase? db,
+  }) async {
     await tester.pumpWidget(
       ProviderScope(
         overrides: [
-          ...stubDatabaseOverrides(),
-          careerSessionProvider.overrideWith((ref) => _session()),
+          if (db != null)
+            playerDatabaseProvider.overrideWith((ref) async => db)
+          else
+            ...stubDatabaseOverrides(),
+          careerSessionProvider.overrideWith((ref) => session),
         ],
         child: MaterialApp(theme: AppTheme.dark(), home: child),
       ),
     );
+  }
+
+  Future<void> pumpAtNarrow(WidgetTester tester, Widget child) async {
+    await pumpSessionAtNarrow(tester, _session(), child);
   }
 
   /// Taps a tab and waits for the page transition to finish. The tab bars are
@@ -170,6 +202,59 @@ void main() {
       find.widgetWithText(FilledButton, 'Start Career'),
     );
     expect(cta.onPressed, isNull);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('League table fits a 360 dp phone', (tester) async {
+    // Real numbers so the played/GD/points columns are all filled.
+    final records = <String, LeagueRecord>{};
+    for (var i = 0; i < 6; i++) {
+      final won = 5 + i % 3;
+      final drawn = i % 2;
+      records['club_$i'] = LeagueRecord(
+        played: 12,
+        won: won,
+        drawn: drawn,
+        lost: 12 - won - drawn,
+        goalsFor: 18 - i,
+        goalsAgainst: 14 + i,
+      );
+    }
+    final session = _session(season: _seasonWithRecords(records));
+    final league = stubLeagueDatabase(6);
+
+    await pumpSessionAtNarrow(tester, session, const LeagueTableScreen(),
+        db: league);
+    await tester.pump();
+
+    expect(find.text('Pts'), findsOneWidget);
+    expect(find.text('GD'), findsOneWidget);
+    for (var i = 0; i < 6; i++) {
+      expect(find.text('Club $i'), findsOneWidget, reason: 'Club $i');
+    }
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('Home shows the winter break state without overflow',
+      (tester) async {
+    // A two-club season has two rounds, so the break falls on round 1.
+    final session = _session(
+      season: SeasonState(
+        leagueId: 'test_league',
+        currentMatchday: 1,
+        currentYear: 2026,
+        isPreSeason: false,
+        isWinterBreak: true,
+        records: {'test_fc': LeagueRecord(), 'rival_fc': LeagueRecord()},
+        rounds: buildRounds(['test_fc', 'rival_fc'], rng: Random(1)),
+      ),
+    );
+
+    await pumpSessionAtNarrow(tester, session, const CareerDashboardScreen());
+    await tester.pump();
+
+    expect(find.text('Resume season'), findsOneWidget);
+    expect(find.textContaining('Winter break'), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
 }

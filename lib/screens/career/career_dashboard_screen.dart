@@ -88,20 +88,26 @@ class _NoCareerBody extends StatelessWidget {
 }
 
 /// Hero: the next fixture, the form pills and the Play button in one card.
-class _NextMatchHero extends StatelessWidget {
+class _NextMatchHero extends ConsumerWidget {
   const _NextMatchHero({required this.session, required this.opponent});
 
   final CareerSession session;
   final Team? opponent;
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
     final theme = Theme.of(context);
     final season = session.season;
     final progress = season.totalMatchdays == 0
         ? 0.0
         : (season.currentMatchday / season.totalMatchdays).clamp(0.0, 1.0);
-    final hasFixture = season.matchdayFixtures.isNotEmpty;
+    // The fixture decides everything: the home/away badge, whether the club
+    // can play at all, and whether the round is a bye.
+    final fixture = season.currentFixtureFor(session.team.id);
+    final hasFixture = fixture != null;
+    final isBye =
+        !hasFixture && !season.isPostSeason && season.rounds.isNotEmpty;
+    final isComplete = season.isPostSeason;
 
     return Card(
       child: Padding(
@@ -149,7 +155,9 @@ class _NextMatchHero extends StatelessWidget {
                 Padding(
                   padding: const EdgeInsets.symmetric(horizontal: 10),
                   child: Text(
-                    'vs',
+                    hasFixture && !fixture.isHomeFor(session.team.id)
+                        ? 'at'
+                        : 'vs',
                     style: theme.textTheme.bodySmall,
                   ),
                 ),
@@ -182,17 +190,31 @@ class _NextMatchHero extends StatelessWidget {
               children: [
                 Expanded(
                   child: FilledButton.icon(
-                    onPressed: hasFixture ? () => context.go('/match') : null,
-                    icon: const Icon(Icons.play_arrow),
-                    label: Text(hasFixture ? 'Play match' : 'Season complete'),
+                    onPressed: _primaryAction(
+                        context, ref, hasFixture, isBye, isComplete),
+                    icon: Icon(_primaryIcon(isBye, isComplete)),
+                    label: Text(
+                      _primaryLabel(hasFixture, isBye, isComplete),
+                      overflow: TextOverflow.ellipsis,
+                    ),
                   ),
                 ),
               ],
             ),
-            if (!hasFixture) ...[
+            if (isBye) ...[
               const SizedBox(height: 8),
               Text(
-                'No fixtures left to play this season.',
+                'No fixture this matchday - the league has an odd number of '
+                'clubs. Everyone else still plays.',
+                style: theme.textTheme.bodySmall,
+                textAlign: TextAlign.center,
+              ),
+            ],
+            if (season.isWinterBreak && !isComplete) ...[
+              const SizedBox(height: 8),
+              Text(
+                'Winter break - the league resumes at matchday '
+                '${season.matchdayNumber}.',
                 style: theme.textTheme.bodySmall,
                 textAlign: TextAlign.center,
               ),
@@ -201,6 +223,63 @@ class _NextMatchHero extends StatelessWidget {
         ),
       ),
     );
+  }
+
+  String _primaryLabel(bool hasFixture, bool isBye, bool isComplete) {
+    if (isComplete) return 'Start next season';
+    if (isBye) return 'Skip matchday';
+    if (session.season.isWinterBreak) return 'Resume season';
+    return 'Play match';
+  }
+
+  IconData _primaryIcon(bool isBye, bool isComplete) {
+    if (isComplete) return Icons.skip_next;
+    if (isBye) return Icons.fast_forward;
+    return Icons.play_arrow;
+  }
+
+  VoidCallback? _primaryAction(
+    BuildContext context,
+    WidgetRef ref,
+    bool hasFixture,
+    bool isBye,
+    bool isComplete,
+  ) {
+    if (isComplete) return () => _rollIntoNextSeason(context, ref);
+    if (isBye) return () => advancePastBye(ref);
+    if (session.season.isWinterBreak) return () => resumeFromWinterBreak(ref);
+    if (hasFixture) return () => context.go('/match');
+    return null;
+  }
+
+  /// Closes the season, applies any movement, and reports the outcome before
+  /// the new season begins.
+  Future<void> _rollIntoNextSeason(BuildContext context, WidgetRef ref) async {
+    final messenger = ScaffoldMessenger.of(context);
+    final outcome = rollIntoNextSeason(ref);
+    if (outcome == null) return;
+    final movement = switch (outcome.movement) {
+      'promoted' => 'Promoted!',
+      'relegated' => 'Relegated.',
+      _ => 'Staying put.',
+    };
+    messenger.showSnackBar(SnackBar(
+      content: Text(
+        '${outcome.year}/${(outcome.year + 1) % 100}: finished '
+        '${ordinalSuffix(outcome.position)} on ${outcome.points} points. '
+        '$movement',
+      ),
+    ));
+  }
+
+  static String ordinalSuffix(int n) {
+    if (n % 100 >= 11 && n % 100 <= 13) return '${n}th';
+    return switch (n % 10) {
+      1 => '${n}st',
+      2 => '${n}nd',
+      3 => '${n}rd',
+      _ => '${n}th',
+    };
   }
 
   Widget _side(
@@ -385,19 +464,14 @@ class _QuickActions extends StatelessWidget {
   }
 }
 
+/// The club due to play this matchday, or null when the club has a bye.
 Team? _opponentTeam(CareerSession session, PlayerDatabase? db) {
-  final fixtureId = _nextOpponentId(session);
-  if (fixtureId == null || db == null) return null;
+  if (db == null) return null;
+  final fixtureId = session.season
+      .currentFixtureFor(session.team.id)
+      ?.opponentOf(session.team.id);
+  if (fixtureId == null) return null;
   return db.teams.where((t) => t.id == fixtureId).firstOrNull;
-}
-
-String? _nextOpponentId(CareerSession session) {
-  final fixtures = session.season.matchdayFixtures;
-  if (fixtures.isEmpty) return null;
-  final index = session.season.currentMatchday.clamp(0, fixtures.length - 1);
-  final parts = fixtures[index].split('|');
-  if (parts.length != 2) return null;
-  return parts[0] == session.team.id ? parts[1] : parts[0];
 }
 
 double _wageBill(List<Player> squad) {

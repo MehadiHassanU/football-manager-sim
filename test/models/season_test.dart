@@ -12,7 +12,7 @@ void main() {
       expect(season.isPreSeason, isTrue);
       expect(season.isWinterBreak, isFalse);
       expect(season.standings, isEmpty);
-      expect(season.matchdayFixtures, isEmpty);
+      expect(season.rounds, isEmpty);
     });
 
     test('SeasonState isPostSeason check', () {
@@ -51,13 +51,18 @@ void main() {
       expect(season.matchdayNumber, 15);
     });
 
-    test('SeasonState with standings', () {
+    test('SeasonState derives points from the club records', () {
       final season = SeasonState(
         leagueId: 'laliga',
-        standings: {'team1': 30, 'team2': 25, 'team3': 20},
+        records: {
+          'team1': LeagueRecord(won: 10),
+          'team2': LeagueRecord(won: 8, drawn: 1),
+          'team3': LeagueRecord(won: 6, drawn: 2),
+        },
       );
       expect(season.standings['team1'], 30);
       expect(season.standings['team2'], 25);
+      expect(season.standings['team3'], 20);
     });
   });
 }
