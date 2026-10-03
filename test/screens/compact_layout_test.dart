@@ -257,4 +257,28 @@ void main() {
     expect(find.textContaining('Winter break'), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
+
+  testWidgets('Home explains a league with no schedule', (tester) async {
+    // A league can lose enough clubs to the squad filter that no round-robin
+    // can be built; the hero must not show a dead "Play match" button.
+    final session = _session(
+      season: SeasonState(
+        leagueId: 'test_league',
+        currentYear: 2026,
+        isPreSeason: false,
+        records: {'test_fc': LeagueRecord()},
+      ),
+    );
+
+    await pumpSessionAtNarrow(tester, session, const CareerDashboardScreen());
+    await tester.pump();
+
+    expect(find.text('No fixtures'), findsOneWidget);
+    expect(find.textContaining('No schedule could be built'), findsOneWidget);
+    final button = tester.widget<FilledButton>(
+      find.widgetWithText(FilledButton, 'No fixtures'),
+    );
+    expect(button.onPressed, isNull);
+    expect(tester.takeException(), isNull);
+  });
 }

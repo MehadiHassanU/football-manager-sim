@@ -108,6 +108,9 @@ class _NextMatchHero extends ConsumerWidget {
     final isBye =
         !hasFixture && !season.isPostSeason && season.rounds.isNotEmpty;
     final isComplete = season.isPostSeason;
+    // A league can end up with too few clubs that cleared the squad filter to
+    // build any schedule at all. Say so rather than showing a dead button.
+    final noSchedule = season.rounds.isEmpty;
 
     return Card(
       child: Padding(
@@ -194,13 +197,22 @@ class _NextMatchHero extends ConsumerWidget {
                         context, ref, hasFixture, isBye, isComplete),
                     icon: Icon(_primaryIcon(isBye, isComplete)),
                     label: Text(
-                      _primaryLabel(hasFixture, isBye, isComplete),
+                      _primaryLabel(hasFixture, isBye, isComplete, noSchedule),
                       overflow: TextOverflow.ellipsis,
                     ),
                   ),
                 ),
               ],
             ),
+            if (noSchedule) ...[
+              const SizedBox(height: 8),
+              Text(
+                'No schedule could be built: no other club in this league has '
+                'a full squad. Pick a club from a larger league.',
+                style: theme.textTheme.bodySmall,
+                textAlign: TextAlign.center,
+              ),
+            ],
             if (isBye) ...[
               const SizedBox(height: 8),
               Text(
@@ -225,7 +237,13 @@ class _NextMatchHero extends ConsumerWidget {
     );
   }
 
-  String _primaryLabel(bool hasFixture, bool isBye, bool isComplete) {
+  String _primaryLabel(
+    bool hasFixture,
+    bool isBye,
+    bool isComplete,
+    bool noSchedule,
+  ) {
+    if (noSchedule) return 'No fixtures';
     if (isComplete) return 'Start next season';
     if (isBye) return 'Skip matchday';
     if (session.season.isWinterBreak) return 'Resume season';
