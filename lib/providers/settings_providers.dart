@@ -201,3 +201,22 @@ double difficultyStrengthMultiplier(String difficulty) {
       return 1.0;
   }
 }
+
+/// How much wage-ceiling headroom a new season grants the manager, by
+/// difficulty.
+///
+/// The board sanctions a fresh ceiling at the rollover from the opening wage
+/// bill. Hard managers get a tighter sanction to plan around, Easy managers
+/// a little more room to experiment. Every factor still stays close to the
+/// bill the club actually carries, so all three remain constrained — this is
+/// calibration, not a free pass.
+double wageCeilingHeadroomFactor(String difficulty) {
+  switch (difficulty) {
+    case 'Easy':
+      return 1.22;
+    case 'Hard':
+      return 1.10;
+    default:
+      return 1.15;
+  }
+}

@@ -15,12 +15,19 @@ import '../core/models/tactics.dart';
 import '../core/models/transfer.dart';
 import '../core/models/youth_player.dart';
 import '../core/constants/game_constants.dart';
+import '../core/services/cup_service.dart';
 import '../core/services/financial_service.dart';
 import '../core/services/match_simulator_service.dart';
+import '../core/services/rival_market_service.dart';
 import '../core/services/transfer_market_service.dart';
 import '../core/services/save_service.dart';
 import 'data_providers.dart';
 import 'settings_providers.dart';
+
+/// The world's rival market clock, exposed as a provider so tests can swap a
+/// scripted service for the real one without leaning on random rolls.
+final rivalTransferServiceProvider =
+    Provider<RivalTransferService>((ref) => RivalTransferService());
 
 /// A complete active career: manager, club, season, and tactics.
 class CareerSession {
@@ -34,10 +41,12 @@ class CareerSession {
     List<YouthPlayer>? youthPlayers,
     this.boardNote = '',
     TransferDesk? transferDesk,
+    List<String>? trophies,
   })  : startXI = startXI ?? [],
         userResults = userResults ?? [],
         youthPlayers = youthPlayers ?? [],
-        transferDesk = transferDesk ?? TransferDesk();
+        transferDesk = transferDesk ?? TransferDesk(),
+        trophies = trophies ?? [];
 
   final Manager manager;
   final Team team;
@@ -64,6 +73,11 @@ class CareerSession {
   /// the session so the existing save blob persists it with everything else.
   TransferDesk transferDesk;
 
+  /// Cups and honours won, one entry per trophy (e.g. "National Cup 2026").
+  /// Feed lines disappear; a cabinet does not — this is also why a cup
+  /// victory settles the board down for a while.
+  final List<String> trophies;
+
   /// `Map<String, int>` get standings -> see [season].
   Map<String, int> get standings => season.standings;
 
@@ -86,6 +100,7 @@ class CareerSession {
         youthPlayers: youthPlayers,
         boardNote: boardNote,
         transferDesk: transferDesk,
+        trophies: trophies,
       );
 }
 
@@ -133,6 +148,16 @@ void startNewCareer(
     rng: Random(),
   );
 
+  // A knockout cup rides the same calendar: its rounds get spliced between
+  // league matchdays deterministically, and the drawn fixtures land right
+  // away so matchday 1's opponent is already on screen.
+  final cup = CupService.attachCup(
+    rounds: rounds,
+    teamIds: [for (final t in leagueRivals) t.id],
+    leagueId: team.leagueId,
+    currentYear: DateTime.now().year,
+  );
+
   final season = SeasonState(
     leagueId: team.leagueId,
     currentMatchday: 0,
@@ -141,6 +166,7 @@ void startNewCareer(
     isWinterBreak: false,
     records: {for (final t in leagueRivals) t.id: LeagueRecord()},
     rounds: rounds,
+    cup: cup,
   );
   final session = CareerSession(manager: manager, team: team, season: season);
   ref.read(careerSessionProvider.notifier).state = session;
@@ -186,11 +212,15 @@ Future<bool> saveCareerNow(WidgetRef ref) async {
     await save.saveJson(_careerMetaKey, {
       'youthPlayers': [for (final y in session.youthPlayers) y.toJson()],
       'userResults': List<int>.from(session.userResults),
+      'trophies': List<String>.from(session.trophies),
       'startXI': List<int>.from(session.startXI),
       'shortlist': ref.read(shortlistProvider).toList(),
       'transferOffers': ref.read(transferOffersProvider),
       'savedTactics': ref.read(savedTacticsProvider),
       'transferDesk': session.transferDesk.toJson(),
+      // The active tactic used to live only in memory, so every restart
+      // silently reset the formation and instructions.
+      'tactic': session.tactic.toJson(),
     });
     // A save now exists: the main menu must show "Continue Career".
     ref.invalidate(hasSaveProvider);
@@ -211,11 +241,11 @@ Future<bool> tryRestoreCareer(WidgetRef ref) async {
     final savedSeason = await SaveService().loadSeason();
     if (manager == null || team == null || savedSeason == null) return false;
 
-    final season = migrateSeasonSchedule(
-      savedSeason,
-      team,
-      ref.read(playerDatabaseProvider).valueOrNull,
-    );
+    // Await the database rather than reading `.valueOrNull`: restore repairs
+    // contracts, reputation and the transfer ledger against it, and a still
+    // loading database silently skipped all of that.
+    final db = await ref.read(playerDatabaseProvider.future);
+    final season = migrateSeasonSchedule(savedSeason, team, db);
 
     final session = CareerSession(manager: manager, team: team, season: season);
 
@@ -233,6 +263,10 @@ Future<bool> tryRestoreCareer(WidgetRef ref) async {
       final results = blob['userResults'];
       if (results is List) {
         session.userResults.addAll(results.whereType<int>());
+      }
+      final trophies = blob['trophies'];
+      if (trophies is List) {
+        session.trophies.addAll(trophies.whereType<String>());
       }
       final xi = blob['startXI'];
       if (xi is List) {
@@ -260,18 +294,32 @@ Future<bool> tryRestoreCareer(WidgetRef ref) async {
     }
 
     // Older saves predate contracts, reputation and windows: repair them on
-    // load instead of refusing to continue the career.
-    final db = ref.read(playerDatabaseProvider).valueOrNull;
+    // load instead of refusing to continue the career. The session's team is a
+    // separate instance from the database's copy of the same club, so it has
+    // to be repaired explicitly or the manager's own squad keeps null deals.
     TransferMarketService().backfillTransferData(
-      db?.teams ?? [team],
+      [...db.teams, team],
       season.currentYear,
     );
+    final tacticJson = blob?['tactic'];
+    if (tacticJson is Map) {
+      session.tactic = Tactic.fromJson(Map<String, dynamic>.from(tacticJson));
+    }
     final deskJson = blob?['transferDesk'];
     session.transferDesk = deskJson is Map
         ? TransferDesk.fromJson(Map<String, dynamic>.from(deskJson))
         : ref.read(transferOffersProvider).isEmpty
             ? TransferDesk()
             : TransferDesk.fromLegacyOffers(ref.read(transferOffersProvider));
+
+    // Rebuild the world from the move list: buys, sales, hijacks and loans
+    // all survive the CSV reload that resets every other squad.
+    TransferMarketService().applyTransferLedger(
+      players: db.players,
+      teams: db.teams,
+      moves: session.transferDesk.ledger,
+      userClub: team.name,
+    );
 
     ref.read(careerSessionProvider.notifier).state = session;
     return true;
@@ -361,9 +409,17 @@ BoardVerdict? applyMatchResult(WidgetRef ref, MatchResult result) {
   session.userResults.add(points);
   if (session.userResults.length > 10) session.userResults.removeAt(0);
 
+  // Appearances are only folded in on the first application of a fixture, so
+  // replaying a matchday after a crash cannot inflate games played.
+  final firstRun = !(fixture?.played ?? false);
+
   if (fixture != null && !fixture.played) {
     fixture.record(result.homeGoals, result.awayGoals);
-    _applyResultToRecords(season, fixture);
+    // Cup ties feed the bracket, not the table: league records only take
+    // league fixtures, so cup results never distort the standings.
+    if (fixture.competition == 'league') {
+      _applyResultToRecords(season, fixture);
+    }
   }
 
   // Everything else in the round, so rivals move too.
@@ -380,6 +436,10 @@ BoardVerdict? applyMatchResult(WidgetRef ref, MatchResult result) {
     session.team.losses += 1;
   }
 
+  if (firstRun) {
+    _recordAppearances(session.team, result, userIsHome: userIsHome);
+  }
+
   final advanced = round + 1;
   final updatedSeason = SeasonState(
     leagueId: season.leagueId,
@@ -390,6 +450,7 @@ BoardVerdict? applyMatchResult(WidgetRef ref, MatchResult result) {
     isWinterBreak: advanced == season.winterBreakRound,
     records: season.records,
     rounds: season.rounds,
+    cup: season.cup,
   );
 
   final updated = _rebuildSession(session, updatedSeason);
@@ -397,7 +458,6 @@ BoardVerdict? applyMatchResult(WidgetRef ref, MatchResult result) {
   // Position comes from the ordered table, which ranks the club itself
   // rather than a points value, so tied clubs no longer alias.
   updated.team.leaguePosition = updatedSeason.positionOf(session.team.id);
-
   // Gate receipts are credited on home games only.
   if (userIsHome) {
     final gate = FinancialService().estimateGateReceipts(session.team);
@@ -408,9 +468,16 @@ BoardVerdict? applyMatchResult(WidgetRef ref, MatchResult result) {
   // The board reacts to the result, so the sack-risk gauge the Home screen
   // shows actually responds to how the manager is doing.
   final verdict = evaluateBoard(ref, updated);
+  // Playing time is the squad's mood: ignored players become unsettled and
+  // eventually hand in a transfer request, which is what the market reacts to.
+  assessSquadHappiness(ref, updated);
   // The market has its own clock: rivals move in, bids arrive, deals die
   // when the window shuts.
   advanceTransferDesk(ref, updated);
+  // The cup bracket advances when a round fills, and the manager's cup fate
+  // becomes board news — after the desk, so the note is not overwritten by
+  // (rarer) deadline-day board reactions.
+  _settleCupAfterRound(updated);
 
   ref.read(careerSessionProvider.notifier).state = updated;
   _persist(ref, updated);
@@ -431,11 +498,166 @@ CareerSession _rebuildSession(CareerSession session, SeasonState season) {
     startXI: session.startXI,
   );
   updated.userResults.addAll(session.userResults);
+  updated.trophies.addAll(session.trophies);
   updated.youthPlayers.addAll(session.youthPlayers);
   updated.boardNote = session.boardNote;
   updated.transferDesk = session.transferDesk;
   return updated;
 }
+
+/// Folds the match's rating list into the squad's appearance totals.
+///
+/// The simulator returns home ratings first and away ratings second, so the
+/// manager's own eleven is sliced by which side he was on. Minutes were never
+/// recorded at all before this, which is why games played sat at zero for a
+/// whole career and the squad's mood had nothing to react to.
+void _recordAppearances(
+  Team team,
+  MatchResult result, {
+  required bool userIsHome,
+}) {
+  final ratings = userIsHome
+      ? result.playerRatings.take(11)
+      : result.playerRatings.skip(11);
+  final byName = {for (final p in team.squad) p.name: p};
+  for (final rating in ratings) {
+    if (rating.minutes <= 0) continue;
+    final player = byName[rating.playerName];
+    if (player == null) continue;
+    player.gamesPlayed += 1;
+    player.minutesPlayed += rating.minutes;
+    player.matchRating = rating.rating;
+    // Form is the rolling match rating; morale drifts with how he played, and
+    // a bad individual display hurts regardless of the result.
+    player.form = ((player.form * 2 + rating.rating) / 3).round().clamp(1, 10);
+    final moraleShift =
+        rating.rating >= 7 ? 4 : (rating.rating <= 5 ? -5 : 0);
+    player.morale = (player.morale + moraleShift).clamp(0, 100);
+  }
+}
+
+/// How many matchdays an ignored player waits before asking to leave.
+const int unsettledPatience = 2;
+
+/// Turns playing time into transfer drama.
+///
+/// A player ranked highly in the squad who is not getting the minutes his
+/// standing implies becomes unsettled; if that persists he hands in a transfer
+/// request, and [advanceTransferDesk] then attracts real offers for him.
+/// Minutes settle him again, and a withdrawn request follows a spell of games,
+/// so the squad reacts to what the manager actually does rather than to a
+/// one-way timer. Everything here is derived from stored counters, so it also
+/// survives a reload.
+void assessSquadHappiness(WidgetRef ref, CareerSession session) {
+  final team = session.team;
+  if (team.matchesPlayed < 4 || team.squad.isEmpty) return;
+  final squad = team.squad;
+  final matchday = session.season.currentMatchday;
+  final desk = session.transferDesk;
+  final order = [...squad]..sort((a, b) => b.ovr.compareTo(a.ovr));
+
+  for (final player in squad) {
+    if (player.isInjured) continue;
+    final rank = order.indexWhere((p) => p.id == player.id);
+    if (rank < 0) continue;
+    // Prospects are expected to wait; everyone else is measured against what
+    // a player of their standing should be playing.
+    if (rank >= 14 && player.age < 23) continue;
+    final expectedShare =
+        rank < 3 ? 0.75 : (rank < 8 ? 0.55 : (rank < 14 ? 0.35 : 0.15));
+    final expectedMinutes = team.matchesPlayed * 90 * expectedShare;
+    final short = player.minutesPlayed < expectedMinutes * 0.6;
+
+    final since = player.hiddenAttributes['unsettled'];
+    final promise = player.hiddenAttributes['minutesPromise'];
+    final promisedAt = promise is int ? promise : null;
+
+    if (!short) {
+      // He is playing again: the complaint clears, and a request is withdrawn
+      // once the minutes have actually followed.
+      if (player.hiddenAttributes.remove('unsettled') != null) {
+        player.hiddenAttributes.remove('minutesPromise');
+        desk.addNews(TransferNewsItem(
+          type: 'settled',
+          title: '${player.name} is settled again',
+          body: 'Minutes have done the talking. He has stopped asking for a '
+              'move.',
+          matchday: matchday,
+        ));
+      }
+      final requestedAt = player.hiddenAttributes['transferRequestMatchday'];
+      if (player.requestedTransfer &&
+          requestedAt is int &&
+          matchday - requestedAt >= 2) {
+        player.requestedTransfer = false;
+        player.hiddenAttributes.remove('transferRequestMatchday');
+        player.morale = (player.morale + 6).clamp(0, 100);
+        desk.addNews(TransferNewsItem(
+          type: 'settled',
+          title: '${player.name} withdraws his transfer request',
+          body: 'He has had the run of games he wanted and is staying.',
+          matchday: matchday,
+        ));
+      }
+      continue;
+    }
+
+    if (since is! int) {
+      player.hiddenAttributes['unsettled'] = matchday;
+      player.morale = (player.morale - 12).clamp(0, 100);
+      desk.addNews(TransferNewsItem(
+        type: 'unsettled',
+        title: '${player.name} is unhappy with his playing time',
+        body: 'He is ranked among your best players but is not getting '
+            'minutes. Talk to him from his profile before he asks to leave.',
+        matchday: matchday,
+      ));
+      continue;
+    }
+
+    if (player.requestedTransfer) continue;
+    // A promise buys patience, but only until the next few fixtures.
+    final from = promisedAt != null && promisedAt > since ? promisedAt : since;
+    final patience = promisedAt != null ? 3 : unsettledPatience;
+    if (matchday - from < patience) continue;
+
+    player.requestedTransfer = true;
+    player.hiddenAttributes['transferRequestMatchday'] = matchday;
+    player.morale = (player.morale - 10).clamp(0, 100);
+    desk.addNews(TransferNewsItem(
+      type: 'request',
+      title: '${player.name} hands in a transfer request',
+      body: 'He has waited long enough for minutes. Offers will follow.',
+      matchday: matchday,
+    ));
+  }
+}
+
+/// Talks an unsettled player round without promising anything concrete.
+///
+/// He stays — but only if the minutes follow within three matchdays, which is
+/// what keeps the promise meaningful instead of a free "calm him down" button.
+void promisePlayingTime(WidgetRef ref, Player player) {
+  final session = ref.read(careerSessionProvider);
+  if (session == null) return;
+  final matchday = session.season.currentMatchday;
+  player.hiddenAttributes['minutesPromise'] = matchday;
+  player.hiddenAttributes['unsettled'] = matchday;
+  player.morale = (player.morale + 8).clamp(0, 100);
+  session.transferDesk.addNews(TransferNewsItem(
+    type: 'unsettled',
+    title: 'You promise ${player.name} minutes',
+    body: 'He will give you three more matchdays. Break that promise and he '
+        'will ask to leave.',
+    matchday: matchday,
+  ));
+  _bumpState(ref);
+  _persist(ref, session);
+}
+
+/// True when the player has complained about his playing time.
+bool unsettledOf(Player player) =>
+    player.hiddenAttributes['unsettled'] is int;
 
 /// Runs the transfer market's own clock after a matchday.
 ///
@@ -465,6 +687,32 @@ void advanceTransferDesk(WidgetRef ref, CareerSession session) {
       message: '$rival have moved first and agreed a deal for '
           '${negotiation.playerName}.',
     ));
+    // The rival actually signs him, so the story is true: he leaves the
+    // seller, joins the rival and stops being available.
+    final db = ref.read(playerDatabaseProvider).valueOrNull;
+    final player =
+        db?.players.where((p) => p.id == negotiation.playerId).firstOrNull;
+    if (db != null && player != null) {
+      for (final team in db.teams) {
+        team.squad.removeWhere((p) => p.id == negotiation.playerId);
+      }
+      final buyer = db.teams.where((t) => t.name == rival).firstOrNull;
+      if (buyer != null) {
+        player.currentTeam = rival;
+        buyer.squad.add(player);
+      }
+      desk.recordMove(TransferMove(
+        playerId: player.id,
+        playerName: player.name,
+        fromClub: negotiation.sellerClub,
+        toClub: rival,
+        kind: 'permanent',
+        fee: negotiation.askingPrice,
+        wage: negotiation.wageDemand,
+        year: season.currentYear,
+        matchday: matchday,
+      ));
+    }
     desk.addNews(TransferNewsItem(
       type: 'hijack',
       title: '$rival hijack ${negotiation.playerName}',
@@ -489,9 +737,37 @@ void advanceTransferDesk(WidgetRef ref, CareerSession session) {
 
   if (window.isOpen) {
     final db = ref.read(playerDatabaseProvider).valueOrNull;
-    for (final player in session.team.squad) {
+    // Rival clubs do their own business before the desk looks at yours: the
+    // news they generate plus the replacements they hunt when the manager
+    // buys from them are what make the league feel alive every matchday.
+    _advanceRivalMarket(ref, session, window);
+    // At the 16-player minimum every offer would be a dead end: accepting one
+    // is refused, so the desk stops generating them and says why once.
+    final atMinimum = session.team.squad.length <= 16;
+    final listedCount = session.team.squad
+        .where((p) =>
+            p.hiddenAttributes['transferListed'] == true ||
+            p.requestedTransfer ||
+            p.hiddenAttributes['loanListed'] == true)
+        .length;
+    if (atMinimum && listedCount > 0) {
+      final alreadyTold = desk.news.any(
+          (n) => n.type == 'minimum' && n.matchday == matchday);
+      if (!alreadyTold) {
+        desk.addNews(TransferNewsItem(
+          type: 'minimum',
+          title: 'No offers while the squad sits at 16',
+          body: 'Clubs will not bid for players you cannot sell: the squad '
+              'must keep 16. Sign or promote someone first.',
+          matchday: matchday,
+        ));
+      }
+    }
+    for (final player in atMinimum ? <Player>[] : session.team.squad) {
+      final loanListed = player.hiddenAttributes['loanListed'] == true;
       final listed = player.hiddenAttributes['transferListed'] == true ||
-          player.requestedTransfer;
+          player.requestedTransfer ||
+          loanListed;
       if (!listed) continue;
       if (desk.incomingBids.any((b) => b.playerId == player.id)) continue;
       final rng = Random(player.id * 7919 + matchday * 17 + season.currentYear);
@@ -504,6 +780,33 @@ void advanceTransferDesk(WidgetRef ref, CareerSession session) {
         matchday: matchday,
       );
       if (club == null) continue;
+
+      // A squad-size shortcut: clubs loan rather than buy when the player is
+      // only loan-listed, or when he is young and needs games.
+      final loanOnly = loanListed &&
+          player.hiddenAttributes['transferListed'] != true &&
+          !player.requestedTransfer;
+      if (loanOnly) {
+        final share = service.loanWageShare(player, session.team);
+        desk.incomingBids.add(IncomingBid(
+          playerId: player.id,
+          playerName: player.name,
+          club: club,
+          fee: 0,
+          matchday: matchday,
+          kind: 'loan',
+          wageSharePercent: share,
+        ));
+        desk.addNews(TransferNewsItem(
+          type: 'sale',
+          title: '$club want ${player.name} on loan',
+          body: 'They would cover $share% of his wage and he would return at '
+              'the end of the season.',
+          matchday: matchday,
+        ));
+        continue;
+      }
+
       final fee = service.incomingFee(
         player,
         seasonYear: season.currentYear,
@@ -536,6 +839,235 @@ void advanceTransferDesk(WidgetRef ref, CareerSession session) {
       matchday: matchday,
     ));
   }
+
+  // The morning after deadline day, the desk reports what the window actually
+  // did. Computed from the ledger, so the numbers are the moves the world
+  // really made rather than a claim the feed invented.
+  final shut = TransferWindow.on(season, matchday - 1);
+  final summarised = desk.news.any(
+      (n) => n.type == 'summary' && n.matchday == matchday);
+  if (shut.isOpen &&
+      shut.isDeadlineDay &&
+      matchday > 0 &&
+      season.currentMatchday - 1 == shut.closesAtMatchday &&
+      !summarised) {
+    desk.addNews(_windowSummary(session, shut));
+    _boardJudgesTheWindow(session, shut);
+  }
+}
+
+/// The board reacts to the window that just shut.
+///
+/// A heavyweight club that closed the window with zero arrivals gets a
+/// visible nudge on the sack-risk gauge and a note the Home screen shows.
+/// The board is demanding because recruitment was its one expectation when
+/// it handed the budget over. Smaller clubs are exempt — a lean squad on a
+/// lean budget is a plan, not neglect.
+///
+/// Runs inside `advanceTransferDesk`, which the matchday calls *after*
+/// [evaluateBoard], so this note survives this matchday's board evaluation
+/// and is what the Home screen reads.
+void _boardJudgesTheWindow(CareerSession session, TransferWindow shut) {
+  if (session.team.reputation < 65) return;
+  final business = _windowBusiness(session, shut);
+  if (business.arrivals > 0 || business.loansIn > 0) return;
+
+  session.manager.sackablePercent =
+      (session.manager.sackablePercent + _windowInactivityPenalty)
+          .clamp(0.0, 100.0);
+  session.boardNote =
+      'The window shut without a single arrival. The board expected '
+      'ambition with the money it handed over.';
+}
+
+/// Sack-risk added the first day after a deadline for a heavyweight club
+/// that made zero signings or loan arrivals.
+const double _windowInactivityPenalty = 10.0;
+
+/// The user's window business, counted straight from the ledger.
+({int arrivals, int loansIn, int departures, int loansOut, int spent, int received})
+    _windowBusiness(CareerSession session, TransferWindow shut) {
+  final windowMoves = session.transferDesk.ledger.where((m) =>
+      m.kind != 'loanReturn' &&
+      m.year == session.season.currentYear &&
+      m.matchday >= shut.opensAtMatchday &&
+      m.matchday <= shut.closesAtMatchday);
+  var arrivals = 0;
+  var loansIn = 0;
+  var departures = 0;
+  var loansOut = 0;
+  var spent = 0;
+  var received = 0;
+  for (final move in windowMoves) {
+    if (move.toClub == session.team.name) {
+      if (move.kind == 'loan') {
+        loansIn++;
+      } else {
+        arrivals++;
+        spent += move.fee;
+      }
+    } else if (move.fromClub == session.team.name) {
+      if (move.kind == 'loan') {
+        loansOut++;
+      } else {
+        departures++;
+        received += move.fee;
+      }
+    }
+  }
+  return (
+    arrivals: arrivals,
+    loansIn: loansIn,
+    departures: departures,
+    loansOut: loansOut,
+    spent: spent,
+    received: received,
+  );
+}
+
+/// Spontaneous rival transfer activity once the desk has handled the user's
+/// business.
+///
+/// Runs only while the window is open. Every move the rivals agree lands in
+/// the desk ledger (replayed on restore, so sold players stay sold) and in
+/// the news feed. Clubs that the manager bought from this window roll with a
+/// much higher chance to replace the player they lost, which turns the
+/// market into a reaction to the user's own business.
+void _advanceRivalMarket(
+  WidgetRef ref,
+  CareerSession session,
+  TransferWindow window,
+) {
+  final db = ref.read(playerDatabaseProvider).valueOrNull;
+  if (db == null || db.teams.isEmpty) return;
+  final season = session.season;
+  final desk = session.transferDesk;
+  final matchday = season.currentMatchday;
+
+  final priorityBuyers = <String>{
+    for (final move in desk.ledger)
+      if (move.year == season.currentYear &&
+          move.matchday >= window.opensAtMatchday &&
+          move.matchday <= matchday &&
+          move.toClub == session.team.name &&
+          (move.kind == 'permanent' || move.kind == 'free'))
+        move.fromClub,
+  };
+
+  final busyPlayers = <int>{
+    for (final negotiation in desk.negotiations)
+      if (negotiation.isActive) negotiation.playerId,
+  };
+
+  final deals = ref.read(rivalTransferServiceProvider).generateMoves(
+    teams: db.teams,
+    userClub: session.team.name,
+    seedKey: season.leagueId,
+    seasonYear: season.currentYear,
+    matchday: matchday,
+    priorityBuyers: priorityBuyers,
+    busyPlayers: busyPlayers,
+    activityMultiplier:
+        difficultyStrengthMultiplier(ref.read(difficultyProvider)),
+  );
+
+  for (final deal in deals) {
+    // Defensive: the manager's squad is never sellable by the rival clock,
+    // regardless of what a generation path hands back. His squad is the
+    // saved, authoritative state.
+    final targetInUserSquad =
+        session.team.squad.any((p) => p.id == deal.player.id);
+    if (targetInUserSquad) continue;
+    _applyRivalDeal(ref, session, db, deal);
+  }
+}
+
+/// Applies a generated rival deal to the world state.
+///
+/// Mirrors the hijack application: the player leaves every club he might
+/// still sit in, joins the buyer with the move's wage, and a durable
+/// `TransferMove` is recorded so a restored save rebuilds the same world.
+void _applyRivalDeal(
+  WidgetRef ref,
+  CareerSession session,
+  PlayerDatabase db,
+  RivalDeal deal,
+) {
+  final desk = session.transferDesk;
+  final season = session.season;
+  final player = deal.player;
+
+  // The saved user squad is the authority for the manager's club; every
+  // other squad (including the seller) updates in place.
+  for (final team in db.teams) {
+    if (team.name == session.team.name) continue;
+    team.squad.removeWhere((p) => p.id == player.id);
+  }
+  player.currentTeam = deal.buyer.name;
+  if (deal.wage > 0) player.weeklyWage = deal.wage.toDouble();
+  deal.buyer.squad.add(player);
+
+  desk.recordMove(TransferMove(
+    playerId: player.id,
+    playerName: player.name,
+    fromClub: deal.seller.name,
+    toClub: deal.buyer.name,
+    kind: deal.fee > 0 ? 'permanent' : 'free',
+    fee: deal.fee,
+    wage: deal.wage,
+    year: season.currentYear,
+    matchday: season.currentMatchday,
+  ));
+
+  desk.addNews(TransferNewsItem(
+    type: 'rival',
+    title: '${deal.buyer.name} sign ${player.name}',
+    body: deal.fee > 0
+        ? '${TransferMarketService.money(deal.fee)} from '
+            '${deal.seller.name}, on ${TransferMarketService.money(deal.wage)} '
+            'a week. The league is not waiting for you.'
+        : 'A free transfer from ${deal.seller.name}. Their contract had run '
+            'out and the league moved first.',
+    matchday: season.currentMatchday,
+  ));
+}
+
+/// One line summarising a window that has just shut.
+///
+/// Counts the user's own business from the ledger and reports the money both
+/// ways, so the feed answers "did the window actually do anything?" instead of
+/// letting the deadline slide past with a single headline.
+TransferNewsItem _windowSummary(CareerSession session, TransferWindow shut) {
+  final business = _windowBusiness(session, shut);
+  final arrivals = business.arrivals;
+  final loansIn = business.loansIn;
+  final departures = business.departures;
+  final loansOut = business.loansOut;
+  final spent = business.spent;
+  final received = business.received;
+
+  final inText = [
+    if (arrivals > 0) '$arrivals signing${arrivals == 1 ? '' : 's'}',
+    if (loansIn > 0) '$loansIn loan${loansIn == 1 ? '' : 's'} in',
+  ];
+  final outText = [
+    if (departures > 0) '$departures sale${departures == 1 ? '' : 's'}',
+    if (loansOut > 0) '$loansOut loan${loansOut == 1 ? '' : 's'} out',
+  ];
+  final closed = TransferMarketService.money(spent);
+  final banked = TransferMarketService.money(received);
+  final body = inText.isEmpty && outText.isEmpty
+      ? 'You did no business in it. The squad is exactly as it was.'
+      : '${inText.isEmpty ? 'No arrivals' : inText.join(' and ')}'
+          '${outText.isEmpty ? ', nobody left' : ', ${outText.join(' and ')}'}. '
+          '$closed spent, $banked banked.';
+
+  return TransferNewsItem(
+    type: 'summary',
+    title: 'The ${shut.label.toLowerCase()} has shut',
+    body: body,
+    matchday: session.season.currentMatchday,
+  );
 }
 
 /// Folds a played fixture into both clubs' league records.
@@ -575,7 +1107,10 @@ void simulateRound(
       rng: rng,
     );
     fixture.record(homeGoals, awayGoals);
-    _applyResultToRecords(season, fixture);
+    // Cup results decide a bracket, never the table.
+    if (fixture.competition == 'league') {
+      _applyResultToRecords(season, fixture);
+    }
   }
 }
 
@@ -602,8 +1137,7 @@ void _simulateRemainingFixtures(
 }
 
 /// The board's verdict on the manager after a matchday.
-class BoardVerdict {
-  const BoardVerdict({
+class BoardVerdict {  const BoardVerdict({
     required this.sacked,
     required this.risk,
     required this.reason,
@@ -614,9 +1148,27 @@ class BoardVerdict {
   final String reason;
 }
 
-/// Points per game that counts as an acceptable run for the board. Real
-/// league seasons average a little under 1.4, so this is "roughly a draw rate".
-const double _boardExpectedPoints = 1.35;
+/// Points per game the board expects, by the club's standing.
+///
+/// Reputation 40 (bottom half) reads ~0.95 PPG — staying in the division is
+/// the job — while reputation 100 (an institution) reads ~1.90. A flat
+/// 1.35 expectation made every club equally pressureless: Bayern and a
+/// relegation candidate were judged by the same ruler, which was exactly why
+/// the gauge never hurt.
+double boardExpectedPoints(int reputation) {
+  const floorRep = 40.0;
+  const floorPpg = 0.95;
+  const span = 0.95;
+  final t = (reputation.clamp(40, 100) - floorRep) / 60.0;
+  return floorPpg + t * span;
+}
+
+/// How hard a matchday's form moves the sack gauge, by club standing.
+///
+/// Bigger clubs get a sharper ruler: their budgets demand results. Small
+/// clubs amortize a bad month more forgivingly.
+double boardSensitivity(int reputation) =>
+    (8.0 + (reputation.clamp(40, 100) - 40) * 0.08).clamp(8.0, 14.0);
 
 /// How many matchdays of form the board weighs.
 const int _boardFormWindow = 5;
@@ -646,8 +1198,8 @@ BoardVerdict? evaluateBoard(WidgetRef ref, CareerSession session) {
       ? results
       : results.sublist(results.length - _boardFormWindow);
   final avgPoints = recent.reduce((a, b) => a + b) / recent.length;
-
-  final delta = (_boardExpectedPoints - avgPoints) * 12;
+  final expected = boardExpectedPoints(session.team.reputation);
+  final delta = (expected - avgPoints) * boardSensitivity(session.team.reputation);
   var risk = (session.manager.sackablePercent + delta).clamp(0.0, 100.0);
 
   final sacked =
@@ -657,7 +1209,8 @@ BoardVerdict? evaluateBoard(WidgetRef ref, CareerSession session) {
           'would accept.'
       : delta > 0.5
           ? 'The board is watching closely after ${recent.length} poor '
-              'matchdays.'
+              'matchdays. It expects about ${expected.toStringAsFixed(2)} '
+              'points a game.${_standingRemark(session.team.reputation)}'
           : delta < -0.5
               ? 'The board is happy with recent results.'
               : 'The board is watching.';
@@ -666,6 +1219,14 @@ BoardVerdict? evaluateBoard(WidgetRef ref, CareerSession session) {
   session.manager.sackablePercent = risk;
   session.boardNote = reason;
   return BoardVerdict(sacked: sacked, risk: risk, reason: reason);
+}
+
+/// One sentence of standing context the board adds to a poor-run note —
+/// why the expectation is what it is at this club's level.
+String _standingRemark(int reputation) {
+  if (reputation >= 85) return ' A club your size is measured in silverware.';
+  if (reputation >= 70) return ' The recruitment was supposed to deliver.';
+  return ' Staying up is the minimum this board will accept.';
 }
 
 /// Ends the current career because the board sacked the manager.
@@ -731,13 +1292,91 @@ void advancePastBye(WidgetRef ref) {
     isWinterBreak: advanced == session.season.winterBreakRound,
     records: session.season.records,
     rounds: session.season.rounds,
+    cup: session.season.cup,
   );
   final updated = _rebuildSession(session, season);
   updated.team.leaguePosition = season.positionOf(session.team.id);
   advanceTransferDesk(ref, updated);
+  // Cup rounds finish on the club's off-days too: without settling here a
+  // knockout round where the club is already out would never progress.
+  _settleCupAfterRound(updated);
   ref.read(careerSessionProvider.notifier).state = updated;
   _persist(ref, updated);
 }
+
+/// Cup bookkeeping for the matchday that just wrapped.
+///
+/// A cup round completes exactly like a league round: the manager's tie is
+/// recorded first, then every other pending fixture in the same round is
+/// simulated. When all ties of a cup round are played the bracket advances;
+/// the manager's own fate — knocked out at some stage, or lifting the cup —
+/// becomes the board's note and, for a final win, a trophy that permanently
+/// lives on the session.
+///
+/// Idempotent: re-applying a matchday after a crash re-derives everything
+/// from played fixtures, and the trophy is set-guarded.
+void _settleCupAfterRound(CareerSession session) {
+  final season = session.season;
+  final cup = season.cup;
+  if (cup == null) return;
+  CupService.progressCup(season);
+
+  // The highest cup round that is drawn AND fully played decides what story
+  // the board hears right now.
+  var settled = -1;
+  List<Fixture>? settledRound;
+  for (var k = 0; k < cup.anchors.length; k++) {
+    final round = season.rounds[cup.anchors[k]];
+    if (round.isEmpty || round.any((f) => !f.played)) break;
+    settled = k;
+    settledRound = round;
+  }
+  if (settledRound == null) return;
+
+  final user = session.team;
+  final tie = settledRound.where((f) => f.involves(user.id)).firstOrNull;
+  if (tie == null) return; // the club sat this stage out already
+
+  if (settled == cup.anchors.length - 1) {
+    // The final: a trophy or heartbreak, one way or the other.
+    final label = '${cup.name} ${season.currentYear}';
+    final winner = CupService.cupWinnerOf(season);
+    if (winner == null) return; // still undecided (impossible here, but safe)
+    if (winner == user.id) {
+      if (!session.trophies.contains(label)) {
+        session.trophies.add(label);
+      }
+      // A cup run settles the board down: silverware is currency.
+      session.manager.sackablePercent =
+          (session.manager.sackablePercent + _cupWinRelief).clamp(0.0, 100.0);
+      session.boardNote =
+          'Champions! The $label is in the cabinet. Even the board '
+          'said something nice for once.';
+    } else {
+      session.boardNote =
+          'Beaten in the $label final. Hillsborough knows what that feels '
+          'like, and so does the board.';
+    }
+    return;
+  }
+
+  // Mid-bracket eliminations read through the next round's draw: alive
+  // clubs find their name in it, gone clubs do not.
+  final next = settled + 1;
+  if (next >= cup.anchors.length) return;
+  final nextFixtures = season.rounds[cup.anchors[next]];
+  if (nextFixtures.isEmpty) return; // nothing drawn (guarded upstream)
+  if (nextFixtures.any((f) => f.involves(user.id))) return;
+  if (cup.byes[next] == user.id) return; // drew a bye, not a knockout
+
+  session.boardNote =
+      'Out of the ${cup.name} at the '
+      '${CupService.roundNameOf(season, settled)}. The board wanted a cup '
+      'run to go with the budget.';
+}
+
+/// Sack-risk credited when the club lifts a cup.
+const double _cupWinRelief = -15.0;
 
 /// Clears the winter break so the paused matchday can be played.
 void resumeFromWinterBreak(WidgetRef ref) {
@@ -751,6 +1390,7 @@ void resumeFromWinterBreak(WidgetRef ref) {
     isWinterBreak: false,
     records: session.season.records,
     rounds: session.season.rounds,
+    cup: session.season.cup,
   );
   final updated = _rebuildSession(session, season);
   ref.read(careerSessionProvider.notifier).state = updated;
@@ -892,6 +1532,9 @@ void promoteYouthPlayer(WidgetRef ref, YouthPlayer youth) {
   player.hiddenAttributes['personality'] =
       youth.hiddenAttributes['personality'];
   player.hiddenAttributes['leadership'] = youth.hiddenAttributes['leadership'];
+  // A promoted prospect earns a first professional wage rather than nothing,
+  // so the wage bill the board sees includes him.
+  player.weeklyWage = FinancialService().expectedWeeklyWage(player);
   session.team.squad.add(player);
   session.youthPlayers.remove(youth);
   _bumpState(ref);
@@ -905,6 +1548,34 @@ void releaseYouthPlayer(WidgetRef ref, YouthPlayer youth) {
   session.youthPlayers.remove(youth);
   _bumpState(ref);
   _persist(ref, session);
+}
+
+/// The club's weekly wage bill, including the wages it is still paying for
+/// players out on loan (they are not in [Team.squad], so nothing else counts
+/// them).
+double weeklyWageBill(Team team) =>
+    FinancialService().calculateWageBill(team) + team.loanedOutWages;
+
+/// Headroom left under the club's weekly wage ceiling, or null when no ceiling
+/// is configured (older saves and stub clubs).
+double? wageHeadroom(Team team) =>
+    team.wageBudget <= 0 ? null : team.wageBudget - weeklyWageBill(team);
+
+/// Why a deal would break the wage ceiling, or null when it fits.
+///
+/// [addedWage] is the weekly cost the deal adds to the bill; a loan where the
+/// club only covers part of a wage passes its share. Returns a message ready
+/// for [transferBlockReasonProvider] so every caller explains the refusal the
+/// same way.
+String? wageCeilingRefusal(Team team, double addedWage) {
+  if (team.wageBudget <= 0) return null;
+  final projected = weeklyWageBill(team) + addedWage;
+  if (projected <= team.wageBudget) return null;
+  return 'That wage would take the bill to '
+      '${TransferMarketService.money(projected)}/wk against a wage budget of '
+      '${TransferMarketService.money(team.wageBudget)}/wk. You have '
+      '${TransferMarketService.money(wageHeadroom(team)!.clamp(0, double.infinity))}/wk '
+      'of room.';
 }
 
 /// Gate receipts the club can still expect this season.
@@ -949,6 +1620,13 @@ bool buyPlayer(
 
   final finance = FinancialService();
   final newWage = wage?.toDouble() ?? player.ovr * 1200.0;
+  // The wage ceiling is the board's, not FFP's: it applies whether or not
+  // enforcement is switched on, because it is what the club can actually pay.
+  final refusal = wageCeilingRefusal(session.team, newWage);
+  if (refusal != null) {
+    ref.read(transferBlockReasonProvider.notifier).state = refusal;
+    return false;
+  }
   if (ref.read(ffpEnabledProvider)) {
     final projectedBill = finance.calculateWageBill(session.team) + newWage;
     final revenue = _projectedSeasonRevenue(session.team, session.season);
@@ -990,7 +1668,11 @@ bool buyPlayer(
 }
 
 /// Sells a player from the user's squad.
-bool sellPlayer(WidgetRef ref, Player player, int fee) {
+///
+/// [buyerClub] is who the player joins. Without it he would simply vanish:
+/// the selling club stops holding him, nobody gains him, and the news feed
+/// would claim a move that the world never saw.
+bool sellPlayer(WidgetRef ref, Player player, int fee, {String? buyerClub}) {
   final session = ref.read(careerSessionProvider);
   if (session == null) return false;
   if (session.team.squad.length <= 16) {
@@ -1000,8 +1682,33 @@ bool sellPlayer(WidgetRef ref, Player player, int fee) {
   }
   ref.read(transferBlockReasonProvider.notifier).state = null;
 
+  final db = ref.read(playerDatabaseProvider).valueOrNull;
+  final buyer = buyerClub == null
+      ? null
+      : db?.teams.where((t) => t.name == buyerClub).firstOrNull;
+
   session.team.squad.removeWhere((p) => p.id == player.id);
   session.team.transferBudget += fee;
+
+  if (buyer != null) {
+    for (final team in db!.teams) {
+      team.squad.removeWhere((p) => p.id == player.id);
+    }
+    player.currentTeam = buyer.name;
+    buyer.squad.add(player);
+    session.transferDesk.recordMove(TransferMove(
+      playerId: player.id,
+      playerName: player.name,
+      fromClub: session.team.name,
+      toClub: buyer.name,
+      kind: 'permanent',
+      fee: fee,
+      wage: player.weeklyWage.round(),
+      year: session.season.currentYear,
+      matchday: session.season.currentMatchday,
+    ));
+  }
+
   _bumpState(ref);
   _persist(ref, session);
   return true;
@@ -1065,17 +1772,31 @@ void setTrainingFocus(WidgetRef ref, Player player, String focus) {
 
 /// The player's squad status: a custom label when one was set, otherwise
 /// derived deterministically from the OVR rank inside the squad.
-String squadStatusOf(Player player, List<Player> squad) {
+///
+/// [rankIndex] lets list-heavy callers pay the O(n log n) sort once per
+/// build instead of once per visible row (see [squadRankIndex]).
+String squadStatusOf(Player player, List<Player> squad,
+    {Map<int, int>? rankIndex}) {
   final custom = player.hiddenAttributes['squadRole'];
   if (custom is String && custom.isNotEmpty) return custom;
-  final sorted = [...squad]..sort((a, b) => b.ovr.compareTo(a.ovr));
-  final rank = sorted.indexWhere((p) => p.id == player.id);
+  final ranks = rankIndex ?? squadRankIndex(squad);
+  final rank = ranks[player.id] ?? -1;
   if (rank < 0) return 'Squad Player';
   if (rank < 3) return 'Key Player';
   if (rank < 7) return 'First Team';
   if (rank < 12) return 'Squad Player';
   if (rank < 18) return 'Rotation';
   return 'Prospect';
+}
+
+/// Squad players ranked by OVR: `id -> rank` (0 is the best).
+///
+/// Squad lists render one row per player and used to re-copy + re-sort the
+/// full squad inside every row builder; the scroll jam showed up as the
+/// squad screen stuttering on every frame.
+Map<int, int> squadRankIndex(List<Player> squad) {
+  final sorted = [...squad]..sort((a, b) => b.ovr.compareTo(a.ovr));
+  return {for (var i = 0; i < sorted.length; i++) sorted[i].id: i};
 }
 
 /// Whether the player is transfer-listed, with the asking price.
@@ -1221,6 +1942,17 @@ SeasonOutcome? rollIntoNextSeason(WidgetRef ref) {
       ? <Team>[]
       : db.teams.where((t) => t.leagueId == team.leagueId).toList();
 
+  final nextRounds = buildRounds([for (final t in rivals) t.id], rng: Random());
+  // Every new season gets a cup, which is also how older saves (schema v2
+  // was cupless) come into the fold — at their next rollover, so a restored
+  // mid-season save never has its matchday counter re-mapped underneath it.
+  final cup = CupService.attachCup(
+    rounds: nextRounds,
+    teamIds: [for (final t in rivals) t.id],
+    leagueId: team.leagueId,
+    currentYear: season.currentYear + 1,
+  );
+
   final nextSeason = SeasonState(
     leagueId: team.leagueId,
     currentMatchday: 0,
@@ -1228,8 +1960,64 @@ SeasonOutcome? rollIntoNextSeason(WidgetRef ref) {
     isPreSeason: false,
     isWinterBreak: false,
     records: {for (final t in rivals) t.id: LeagueRecord()},
-    rounds: buildRounds([for (final t in rivals) t.id], rng: Random()),
+    rounds: nextRounds,
+    cup: cup,
   );
+
+  // Loans end with the season: borrowed players go home, loaned-out players
+  // come back, and everyone's full wage is restored.
+  for (final loan in [...session.transferDesk.loans]) {
+    final player =
+        db?.players.where((p) => p.id == loan.playerId).firstOrNull;
+    if (player == null) continue;
+    if (loan.toClub == team.name) {
+      // Borrowed in: back to the owner.
+      team.squad.removeWhere((p) => p.id == loan.playerId);
+      player
+        ..weeklyWage = loan.wage.toDouble()
+        ..hiddenAttributes.remove('onLoanFrom')
+        ..hiddenAttributes.remove('loanUntilYear')
+        ..currentTeam = loan.fromClub;
+      final owner =
+          db?.teams.where((t) => t.name == loan.fromClub).firstOrNull;
+      if (owner != null && !owner.squad.any((p) => p.id == loan.playerId)) {
+        owner.squad.add(player);
+      }
+    } else {
+      // Loaned out: home again, on his full wage.
+      player
+        ..weeklyWage = loan.wage.toDouble()
+        ..currentTeam = team.name;
+      if (!team.squad.any((p) => p.id == loan.playerId)) {
+        team.squad.add(player);
+      }
+    }
+    session.transferDesk.recordMove(TransferMove(
+      playerId: player.id,
+      playerName: player.name,
+      fromClub: loan.toClub,
+      toClub: loan.fromClub,
+      kind: 'loanReturn',
+      fee: 0,
+      wage: loan.wage,
+      year: nextSeason.currentYear,
+      matchday: 0,
+    ));
+  }
+  session.transferDesk.loans.clear();
+  team.loanedOutWages = 0;
+  // A new season is a new sanction: the board raises the wage ceiling to at
+  // least the bill the club starts the year with, plus headroom. Without this
+  // a squad that grew during the window would be over its own limit on day
+  // one and unable to sign anyone at all. How much headroom is a difficulty
+  // decision — tight sanctions are what "Hard" is about.
+  final openingBill = weeklyWageBill(team);
+  if (openingBill > 0) {
+    team.wageBudget = max(
+        team.wageBudget,
+        openingBill *
+            wageCeilingHeadroomFactor(ref.read(difficultyProvider)));
+  }
 
   final updated = _rebuildSession(session, nextSeason);
   updated.userResults.clear();

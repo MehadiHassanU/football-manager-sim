@@ -93,7 +93,11 @@ void main() {
       expect(after.season.currentYear, 2027);
       expect(after.season.currentMatchday, 0);
       expect(after.season.isWinterBreak, isFalse);
-      expect(after.season.rounds.length, 2 * (clubCount - 1));
+      // The new season rides a cup: the league double round-robin plus the
+      // cup rounds spliced into the calendar.
+      expect(after.season.cup, isNotNull);
+      expect(after.season.rounds.length,
+          2 * (clubCount - 1) + after.season.cup!.anchors.length);
       expect(after.userResults, isEmpty,
           reason: 'form belongs to a season, not a career');
 

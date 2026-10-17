@@ -44,13 +44,17 @@ class TeamAdapter implements TypeAdapter<Team> {
       transferBudget: (fields[24] as num).toDouble(),
       sackablePercent: (fields[25] as num).toDouble(),
       fanLoyalty: (fields[26] as num).toDouble(),
+      // Added after the first schema: absent on older saves, so the model's
+      // derived default (budget * 0.45) is used instead.
+      wageBudget: (fields[27] as num?)?.toDouble(),
+      loanedOutWages: (fields[28] as num?)?.toDouble() ?? 0,
     );
   }
 
   @override
   void write(BinaryWriter writer, Team obj) {
     writer
-      ..writeByte(27)
+      ..writeByte(29)
       ..writeByte(0)..write(obj.id)
       ..writeByte(1)..write(obj.name)
       ..writeByte(2)..write(obj.shortName)
@@ -77,6 +81,8 @@ class TeamAdapter implements TypeAdapter<Team> {
       ..writeByte(23)..write(obj.revenue)
       ..writeByte(24)..write(obj.transferBudget)
       ..writeByte(25)..write(obj.sackablePercent)
-      ..writeByte(26)..write(obj.fanLoyalty);
+      ..writeByte(26)..write(obj.fanLoyalty)
+      ..writeByte(27)..write(obj.wageBudget)
+      ..writeByte(28)..write(obj.loanedOutWages);
   }
 }

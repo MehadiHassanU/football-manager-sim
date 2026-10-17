@@ -7,8 +7,10 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:football_manager_sim/core/models/fixture.dart';
 import 'package:football_manager_sim/core/models/manager.dart';
 import 'package:football_manager_sim/core/models/match.dart';
+import 'package:football_manager_sim/core/models/player.dart';
 import 'package:football_manager_sim/core/models/season.dart';
 import 'package:football_manager_sim/core/models/team.dart';
+import 'package:football_manager_sim/core/services/transfer_market_service.dart';
 import 'package:football_manager_sim/providers/career_session_provider.dart';
 import 'package:football_manager_sim/providers/data_providers.dart';
 import 'package:football_manager_sim/providers/settings_providers.dart';
@@ -400,6 +402,102 @@ void main() {
     });
   });
 
+  group('wage ceiling', () {
+    Team cappedTeam(double ceiling) => Team(
+          id: 'capped',
+          name: 'Capped FC',
+          shortName: 'CAP',
+          leagueId: 'test_league',
+          country: 'Spain',
+          stadiumName: 'The Cap',
+          stadiumCapacity: 30000,
+          budget: 5000000,
+          color: '#123456',
+          badgeUrl: '',
+          wageBudget: ceiling,
+          squad: [
+            for (var i = 0; i < 16; i++)
+              stubPlayer(id: 80000 + i, name: 'W$i', ovr: 70)
+                ..weeklyWage = 5625, // €90k/wk in total
+          ],
+        );
+
+    CareerSession sessionFor(Team team) => CareerSession(
+          manager: Manager(name: 'Boss', age: 40, nationality: 'Spain'),
+          team: team,
+          season: SeasonState(
+              leagueId: 'test_league', records: {'capped': LeagueRecord()}),
+        );
+
+    testWidgets('a signing past the weekly ceiling is refused', (tester) async {
+      final team = cappedTeam(100000);
+      final session = sessionFor(team);
+      final container = _containerFor(stubLeagueDatabase(8), session);
+      final target = stubPlayer(id: 81000, name: 'Target', ovr: 70);
+
+      await _run(
+        tester,
+        container,
+        (ref) => buyPlayer(ref, target, 1000, wage: 20000),
+      );
+
+      expect(team.squad.any((p) => p.id == 81000), isFalse);
+      final reason = container.read(transferBlockReasonProvider)!;
+      expect(reason, contains('wage budget'));
+      expect(reason, contains('room'));
+      expect(team.transferBudget, closeTo(1500000, 1),
+          reason: 'a refused signing must not spend the fee');
+    });
+
+    testWidgets('a signing inside the ceiling goes through', (tester) async {
+      final team = cappedTeam(100000);
+      final session = sessionFor(team);
+      final container = _containerFor(stubLeagueDatabase(8), session);
+      final target = stubPlayer(id: 81001, name: 'Bargain', ovr: 70);
+
+      await _run(
+        tester,
+        container,
+        (ref) => buyPlayer(ref, target, 1000, wage: 5000),
+      );
+
+      expect(team.squad.any((p) => p.id == 81001), isTrue);
+      expect(weeklyWageBill(team), 95000);
+      expect(container.read(transferBlockReasonProvider), isNull);
+    });
+
+    testWidgets('a club with no configured ceiling is never blocked',
+        (tester) async {
+      // Saves written before the field existed read back as 0, which has to
+      // mean "no ceiling" rather than "no money".
+      final team = cappedTeam(0);
+      final session = sessionFor(team);
+      final container = _containerFor(stubLeagueDatabase(8), session);
+      final target = stubPlayer(id: 81002, name: 'Expensive', ovr: 90);
+
+      await _run(
+        tester,
+        container,
+        (ref) => buyPlayer(ref, target, 1000, wage: 900000),
+      );
+
+      expect(team.squad.any((p) => p.id == 81002), isTrue);
+    });
+
+    test('backfill derives the ceiling from the bill the club inherits', () {
+      final team = cappedTeam(0);
+      TransferMarketService().backfillTransferData([team], 2026);
+
+      expect(team.wageBudget, closeTo(90000 * 1.15, 1),
+          reason: 'the board sanctions the inherited bill plus headroom');
+
+      // A ceiling already on the save must survive the same call.
+      team.wageBudget = 123456;
+      TransferMarketService().backfillTransferData([team], 2026);
+      expect(team.wageBudget, 123456);
+    });
+  });
+
   group('commentary settings', () {
     final events = [
       MatchEvent(
@@ -440,6 +538,101 @@ void main() {
       final filtered =
           applyCommentarySettings(events, enabled: true, level: 'all');
       expect(filtered.length, events.length);
+    });
+  });
+
+  group('appearances', () {
+    List<PlayerRating> ratings(List<Player> squad) => [
+          for (final p in squad.take(11))
+            PlayerRating(
+              playerName: p.name,
+              position: p.primaryPosition,
+              rating: 7,
+              goals: 0,
+              assists: 0,
+              minutes: 90,
+              started: true,
+            ),
+        ];
+
+    MatchResult withRatings(CareerSession session, PlayerDatabase db) {
+      final fixture = session.season.currentFixtureFor(session.team.id);
+      final userIsHome = fixture?.isHomeFor(session.team.id) ?? true;
+      final mine = ratings(session.team.squad);
+      final theirs = ratings(db.teams[1].squad);
+      return MatchResult(
+        homeTeam: userIsHome ? session.team.name : db.teams[1].name,
+        awayTeam: userIsHome ? db.teams[1].name : session.team.name,
+        homeGoals: 2,
+        awayGoals: 0,
+        events: const [],
+        // The simulator returns the home side's eleven first, so the order
+        // here has to match which side the manager is on.
+        playerRatings:
+            userIsHome ? [...mine, ...theirs] : [...theirs, ...mine],
+        homeMomentum: const [],
+        awayMomentum: const [],
+        fullTimeCommentary: '',
+      );
+    }
+
+    testWidgets('a played fixture records apps, minutes and match rating',
+        (tester) async {
+      final db = stubLeagueDatabase(8);
+      final session = _sessionFor(db);
+      final container = _containerFor(db, session);
+      final starter = session.team.squad.first;
+      final bench = session.team.squad.last;
+      expect(starter.gamesPlayed, 0);
+
+      await _run(
+        tester,
+        container,
+        (ref) => applyMatchResult(ref, withRatings(session, db)),
+      );
+
+      expect(starter.gamesPlayed, 1);
+      expect(starter.minutesPlayed, 90);
+      expect(starter.matchRating, 7);
+      expect(bench.gamesPlayed, 0,
+          reason: 'only the eleven that played get appearance credit');
+    });
+
+    testWidgets('a round whose fixture is already played credits no extras',
+        (tester) async {
+      final db = stubLeagueDatabase(8);
+      final session = _sessionFor(db);
+      final container = _containerFor(db, session);
+      final result = withRatings(session, db);
+      final starter = session.team.squad.first;
+
+      await _run(tester, container, (ref) => applyMatchResult(ref, result));
+      expect(starter.gamesPlayed, 1);
+
+      // A save left pointing at a played round (a crash between the result
+      // landing and the matchday advancing) must not credit him again.
+      final restored = CareerSession(
+        manager: session.manager,
+        team: session.team,
+        season: SeasonState(
+          leagueId: 'test_league',
+          currentMatchday: 0,
+          currentYear: 2026,
+          isPreSeason: false,
+          records: session.season.records,
+          rounds: session.season.rounds,
+        ),
+      );
+      final restoredContainer = _containerFor(db, restored);
+      await _run(
+        tester,
+        restoredContainer,
+        (ref) => applyMatchResult(ref, result),
+      );
+
+      expect(starter.gamesPlayed, 1,
+          reason: 'the fixture is already in the record');
+      expect(starter.minutesPlayed, 90);
     });
   });
 

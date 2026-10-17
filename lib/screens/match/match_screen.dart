@@ -10,6 +10,7 @@ import '../../core/models/match.dart';
 import '../../core/models/player.dart';
 import '../../core/models/tactics.dart';
 import '../../core/models/team.dart';
+import '../../core/services/cup_service.dart';
 import '../../core/services/match_simulator_service.dart';
 import '../../providers/career_session_provider.dart';
 import '../../providers/data_providers.dart';
@@ -110,6 +111,17 @@ class _MatchScreenState extends ConsumerState<MatchScreen> {
         'slow' => 180,
         'fast' => 45,
         _ => _tickerSeconds,
+      };
+
+  /// Cadence between live updates, per speed setting.
+  ///
+  /// Total duration is unchanged per speed; a faster cadence reveals events
+  /// in smaller steps so the feed feels responsive on 'fast' instead of
+  /// popping whole minutes at once.
+  int get _tickIntervalMs => switch (ref.read(matchSpeedProvider)) {
+        'slow' => 900,
+        'fast' => 160,
+        _ => 500,
       };
 
   @override
@@ -239,9 +251,11 @@ class _MatchScreenState extends ConsumerState<MatchScreen> {
   /// never finish and the timer never cancelled.)
   void _startTicker() {
     _ticker?.cancel();
-    final totalTicks = _durationSeconds * 2; // ticks are 500ms apart
-    debugPrint('[MATCH] Ticker started ($_durationSeconds}s)');
-    _ticker = Timer.periodic(const Duration(milliseconds: 500), (timer) {
+    final intervalMs = _tickIntervalMs;
+    final totalTicks = (_durationSeconds * 1000 / intervalMs).round();
+    debugPrint(
+        '[MATCH] Ticker started ($_durationSeconds}s, ${intervalMs}ms/tick)');
+    _ticker = Timer.periodic(Duration(milliseconds: intervalMs), (timer) {
       if (!mounted || _result == null) {
         timer.cancel();
         return;
@@ -452,6 +466,16 @@ class _PreMatch extends ConsumerWidget {
               '${opponent != null ? ' · vs ${opponent.name}' : ''}',
               style: theme.textTheme.bodyMedium,
             ),
+            if (_cupTieLabel(session) case final cupLabel?) ...[
+              const SizedBox(height: 4),
+              Text(
+                cupLabel,
+                style: theme.textTheme.bodySmall?.copyWith(
+                  color: AppTheme.pitchGreen,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ],
             const SizedBox(height: 4),
             Text('The match plays out in about $duration.',
                 style: theme.textTheme.bodySmall),
@@ -942,6 +966,17 @@ Team? _pickOpponent(CareerSession session, PlayerDatabase db) {
           (t) => t.leagueId == session.team.leagueId && t.id != session.team.id)
       .toList();
   return rivals.isEmpty ? null : rivals.first;
+}
+
+/// 'Cup · Semi-finals' when the club is due a knockout tie this matchday,
+/// else null: league fixtures need no competition tag.
+String? _cupTieLabel(CareerSession session) {
+  final season = session.season;
+  final fixture =
+      season.userFixtureForRound(season.currentMatchday, session.team.id);
+  if (fixture == null || fixture.competition != 'cup') return null;
+  final cupRound = CupService.cupRoundIndexOf(season, season.currentMatchday);
+  return 'Cup · ${CupService.roundNameOf(season, cupRound)}';
 }
 
 /// The out-field players that start, picked for the manager's chosen

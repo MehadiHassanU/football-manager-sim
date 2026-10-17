@@ -103,6 +103,7 @@ class _TransferMarketScreenState extends ConsumerState<TransferMarketScreen>
           _BudgetStrip(
             budget: session.team.transferBudget,
             reputation: session.team.reputation,
+            team: session.team,
           ),
           _WindowBanner(window: window, season: season),
           const SizedBox(height: 6),
@@ -125,6 +126,7 @@ class _TransferMarketScreenState extends ConsumerState<TransferMarketScreen>
                   bids: desk.incomingBids,
                   onAccept: (bid) => _resolveIncoming(bid, accept: true),
                   onReject: (bid) => _resolveIncoming(bid, accept: false),
+                  squadAtMinimum: session.team.squad.length <= 16,
                 ),
                 _MyPlayersTab(
                   squad: session.team.squad,
@@ -148,6 +150,13 @@ class _TransferMarketScreenState extends ConsumerState<TransferMarketScreen>
 
   void _resolveIncoming(IncomingBid bid, {required bool accept}) {
     if (accept) {
+      if (bid.isLoan) {
+        final done = acceptLoanOffer(ref, bid);
+        _snack(done
+            ? '${bid.playerName} joins ${bid.club} on loan'
+            : ref.read(transferBlockReasonProvider) ?? 'Cannot loan him out.');
+        return;
+      }
       final sold = acceptIncomingBid(ref, bid);
       _snack(sold
           ? '${bid.playerName} sold to ${bid.club} for ${_euro(bid.fee)}'
@@ -206,7 +215,19 @@ class _TransferMarketScreenState extends ConsumerState<TransferMarketScreen>
       ),
     );
     if (ok != true || !mounted) return;
-    final sold = sellPlayer(ref, player, fee);
+    // A quick sale still needs a destination, or the player would drop out of
+    // the world entirely: pick the club that would have bid for him.
+    final db = ref.read(playerDatabaseProvider).valueOrNull;
+    final buyer = db == null
+        ? null
+        : TransferMarketService().incomingClubFor(
+            player,
+            db.teams,
+            session.team,
+            seasonYear: session.season.currentYear,
+            matchday: session.season.currentMatchday,
+          );
+    final sold = sellPlayer(ref, player, fee, buyerClub: buyer);
     _snack(sold
         ? '${player.name} sold for ${_euro(fee)}'
         : ref.read(transferBlockReasonProvider) ?? 'Cannot sell.');
@@ -221,39 +242,90 @@ class _TransferMarketScreenState extends ConsumerState<TransferMarketScreen>
 }
 
 class _BudgetStrip extends StatelessWidget {
-  const _BudgetStrip({required this.budget, required this.reputation});
+  const _BudgetStrip({
+    required this.budget,
+    required this.reputation,
+    required this.team,
+  });
 
   final double budget;
   final int reputation;
+  final Team team;
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    final bill = weeklyWageBill(team);
+    final headroom = wageHeadroom(team);
+    final overBudget = headroom != null && headroom < 0;
     return Padding(
       padding: const EdgeInsets.fromLTRB(16, 10, 16, 2),
-      child: Row(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const Icon(Icons.savings_outlined, size: 16),
-          const SizedBox(width: 6),
-          Expanded(
-            child: Text(
-              'Transfer budget',
-              style: theme.textTheme.bodySmall,
-              overflow: TextOverflow.ellipsis,
+          Row(
+            children: [
+              const Icon(Icons.savings_outlined, size: 16),
+              const SizedBox(width: 6),
+              Expanded(
+                child: Text(
+                  'Transfer budget',
+                  style: theme.textTheme.bodySmall,
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
+              Text(
+                _euro(budget),
+                style: theme.textTheme.titleMedium?.copyWith(
+                  color: AppTheme.pitchGreen,
+                  fontFeatures: const [FontFeature.tabularFigures()],
+                ),
+              ),
+              const SizedBox(width: 8),
+              Tooltip(
+                message: 'Club reputation: how big a draw your club is',
+                child: _Tag(text: 'REP $reputation'),
+              ),
+            ],
+          ),
+          if (headroom != null) ...[
+            const SizedBox(height: 4),
+            Row(
+              children: [
+                Icon(
+                  overBudget
+                      ? Icons.trending_up
+                      : Icons.account_balance_wallet_outlined,
+                  size: 16,
+                  color: overBudget ? theme.colorScheme.error : null,
+                ),
+                const SizedBox(width: 6),
+                Expanded(
+                  child: Tooltip(
+                    message: 'Wages are the board\'s ceiling: a signing that '
+                        'would break it is refused however big the transfer '
+                        'budget is.',
+                    child: Text(
+                      'Wage bill ${_euro(bill)}/wk of '
+                      '${_euro(team.wageBudget)}/wk',
+                      style: theme.textTheme.bodySmall?.copyWith(
+                        color: overBudget ? theme.colorScheme.error : null,
+                      ),
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+                ),
+                Text(
+                  overBudget
+                      ? '${_euro(-headroom)}/wk over'
+                      : '${_euro(headroom)}/wk room',
+                  style: theme.textTheme.labelSmall?.copyWith(
+                    color: overBudget ? theme.colorScheme.error : null,
+                  ),
+                ),
+              ],
             ),
-          ),
-          Text(
-            _euro(budget),
-            style: theme.textTheme.titleMedium?.copyWith(
-              color: AppTheme.pitchGreen,
-              fontFeatures: const [FontFeature.tabularFigures()],
-            ),
-          ),
-          const SizedBox(width: 8),
-          Tooltip(
-            message: 'Club reputation: how big a draw your club is',
-            child: _Tag(text: 'REP $reputation'),
-          ),
+          ],
         ],
       ),
     );
@@ -337,6 +409,16 @@ class _TransferMarketBodyState extends ConsumerState<TransferMarketBody> {
   List<MarketListing>? _listings;
   int? _listingsKey;
 
+  // Filter memo: re-filtering is cheap next to re-valuing the market, but it
+  // still ran three passes over ~16k rows on every keystroke. The result is
+  // reused whenever neither the source list nor the filter inputs changed.
+  List<MarketListing>? _filteredSource;
+  String? _filteredQuery;
+  String? _filteredPosition;
+  bool? _filteredAffordable;
+  double? _filteredBudget;
+  List<MarketListing>? _filteredMarket;
+
   @override
   void initState() {
     super.initState();
@@ -352,12 +434,35 @@ class _TransferMarketBodyState extends ConsumerState<TransferMarketBody> {
     super.dispose();
   }
 
-  /// Prices the whole market once per session change instead of inside the
-  /// list builder. Valuing 16,000 players per frame froze the old screen.
+  /// Prices the whole market once per *relevant* change instead of inside the
+  /// list builder. Valuing 16,000 players per frame froze the old screen, and
+  /// keying this cache on the session instance itself made every unrelated
+  /// bump (a morale nudge, a board note) throw the whole listing away.
+  ///
+  /// The key is what `buildListings` + the owned-filter actually read: the
+  /// database, the season year, the buyer's id/league/reputation and the set
+  /// of players the user owns (order-insensitive) — plus how many moves the
+  /// world has recorded, because a rival or hijack transfer changes where a
+  /// player sits and what he earns without touching the session object.
+  /// Everything else — morale, board pressure, matchday counters — keeps the
+  /// cache.
   List<MarketListing> _marketFor(PlayerDatabase db, CareerSession session) {
-    final key = Object.hash(db, session);
+    final squad = session.team.squad;
+    var squadSeed = squad.length;
+    for (final p in squad) {
+      squadSeed = (squadSeed + p.id * 31) & 0x7FFFFFFF;
+    }
+    final key = Object.hash(
+        db,
+        session.season.currentYear,
+        session.team.id,
+        session.team.leagueId,
+        session.team.reputation,
+        squadSeed,
+        session.transferDesk.ledger.length,
+        session.transferDesk.loans.length);
     if (_listings == null || _listingsKey != key) {
-      final owned = {for (final p in session.team.squad) p.id};
+      final owned = {for (final p in squad) p.id};
       _listings = TransferMarketService()
           .buildListings(
             players: db.players,
@@ -376,6 +481,46 @@ class _TransferMarketBodyState extends ConsumerState<TransferMarketBody> {
       _listingsKey = key;
     }
     return _listings!;
+  }
+
+  /// One-pass filter over the market rows, memoized per source list + filter
+  /// inputs, so typing in the search box filters once per edit instead of
+  /// re-running the whole chain on every rebuild.
+  List<MarketListing> _applyFilters(
+    List<MarketListing> source,
+    String query,
+    String position,
+    bool onlyAffordable,
+    double transferBudget,
+  ) {
+    final q = query.trim().toLowerCase();
+    final pos = position.trim().toUpperCase();
+    if (!identical(_filteredSource, source) ||
+        _filteredQuery != q ||
+        _filteredPosition != pos ||
+        _filteredAffordable != onlyAffordable ||
+        _filteredBudget != transferBudget) {
+      _filteredMarket = source
+          .where((l) {
+            if (q.isNotEmpty && !l.player.name.toLowerCase().contains(q)) {
+              return false;
+            }
+            if (pos.isNotEmpty && l.player.primaryPosition != pos) {
+              return false;
+            }
+            if (onlyAffordable && l.askingPrice > transferBudget) {
+              return false;
+            }
+            return true;
+          })
+          .toList();
+      _filteredSource = source;
+      _filteredQuery = q;
+      _filteredPosition = pos;
+      _filteredAffordable = onlyAffordable;
+      _filteredBudget = transferBudget;
+    }
+    return _filteredMarket!;
   }
 
   @override
@@ -398,6 +543,7 @@ class _TransferMarketBodyState extends ConsumerState<TransferMarketBody> {
           _BudgetStrip(
             budget: session.team.transferBudget,
             reputation: session.team.reputation,
+            team: session.team,
           ),
           // The standalone market (squad screen's Transfers tab) owns its own
           // window banner: without it a disabled bid button has no
@@ -420,7 +566,15 @@ class _TransferMarketBodyState extends ConsumerState<TransferMarketBody> {
             searchController: _search,
             positionController: _positionFilter,
             onToggleAffordable: (v) => setState(() => _onlyAffordable = v),
-            listings: db == null ? const [] : _marketFor(db, session),
+            listings: db == null
+                ? const <MarketListing>[]
+                : _applyFilters(
+                    _marketFor(db, session),
+                    _query,
+                    _position,
+                    _onlyAffordable,
+                    session.team.transferBudget,
+                  ),
           ),
         ),
       ],
@@ -480,13 +634,12 @@ class _MarketList extends ConsumerWidget {
     }
 
     final window = TransferWindow.of(session.season);
-    final q = query.trim().toLowerCase();
+    // [listings] arrives pre-filtered by the owning state — it runs once per
+    // source/filter change there, so the rows don't re-filter on every build.
+    final market = listings;
+    // Dropdown display remains position-aware even though filtering happens
+    // upstream now.
     final pos = position.trim().toUpperCase();
-    final market = listings
-        .where((l) => q.isEmpty || l.player.name.toLowerCase().contains(q))
-        .where((l) => pos.isEmpty || l.player.primaryPosition == pos)
-        .where((l) => !onlyAffordable || l.askingPrice <= session.team.transferBudget)
-        .toList();
 
     return Column(
       children: [
@@ -587,6 +740,16 @@ class _MarketList extends ConsumerWidget {
                           active: shortlist.contains(player.id),
                           onPressed: () => toggleShortlist(ref, player.id),
                         ),
+                        if (signable &&
+                            TransferMarketService()
+                                .loanAvailable(player, listing.seller))
+                          _RowAction(
+                            icon: Icons.swap_horiz,
+                            tooltip: 'Offer a loan',
+                            active: true,
+                            onPressed: () =>
+                                openLoanDialog(context, ref, player),
+                          ),
                         _RowAction(
                           icon: Icons.gavel,
                           tooltip: signable
@@ -639,11 +802,19 @@ class _ShortlistTab extends ConsumerWidget {
     final session = ref.watch(careerSessionProvider);
     final seasonYear = session?.season.currentYear ?? DateTime.now().year;
     final owned = {for (final p in squad) p.id};
+    // One bounded pass over the database replaces a per-shortlist-item
+    // `.where` scan (~N x 16k per rebuild). Owned players resolve through the
+    // squad instance first, preserving the previous precedence.
+    final dbById = <int, Player>{
+      for (final p in db?.players ?? const <Player>[])
+        if (shortlist.contains(p.id)) p.id: p,
+    };
     final players = <Player>[
       for (final id in shortlist)
-        ...?owned.contains(id)
-            ? squad.where((p) => p.id == id)
-            : db?.players.where((p) => p.id == id),
+        if (owned.contains(id))
+          squad.firstWhere((p) => p.id == id)
+        else if (dbById[id] != null)
+          dbById[id]!,
     ]..sort((a, b) => b.ovr.compareTo(a.ovr));
 
     const service = TransferMarketService();
@@ -719,10 +890,16 @@ class _TalksTab extends ConsumerWidget {
       );
     }
 
+    // One id index per rebuild replaces a per-negotiation `.where` scan of
+    // the whole 16k player database.
+    final byId = {
+      for (final p in db?.players ?? const <Player>[]) p.id: p,
+    };
+
     Player? playerFor(int id) {
       final own = session.team.squad.where((p) => p.id == id).firstOrNull;
       if (own != null) return own;
-      return db?.players.where((p) => p.id == id).firstOrNull;
+      return byId[id];
     }
 
     return ListView(
@@ -945,64 +1122,140 @@ class _OffersTab extends StatelessWidget {
     required this.bids,
     required this.onAccept,
     required this.onReject,
+    this.squadAtMinimum = false,
   });
 
   final List<IncomingBid> bids;
   final ValueChanged<IncomingBid> onAccept;
   final ValueChanged<IncomingBid> onReject;
 
+  /// True when the squad sits at the 16-player floor, so every offer here is
+  /// unanswerable until someone is signed or promoted.
+  final bool squadAtMinimum;
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     if (bids.isEmpty) {
-      return const EmptyState(
+      return EmptyState(
         icon: Icons.inbox_outlined,
         title: 'No bids for your players',
-        message: 'List a player from My Players and clubs will start bidding '
-            'after the next matchday.',
+        message: squadAtMinimum
+            ? 'Your squad is at the 16-player minimum, so clubs will not bid '
+                'for anyone until you add a player.'
+            : 'List or loan-list a player from My Players and clubs will '
+                'start calling after the next matchday.',
       );
     }
-    return ListView.builder(
+    final loans = bids.where((b) => b.isLoan).toList();
+    final permanent = bids.where((b) => !b.isLoan).toList();
+    return ListView(
       padding: const EdgeInsets.fromLTRB(16, 12, 16, 16),
-      itemCount: bids.length,
-      itemBuilder: (context, index) {
-        final bid = bids[index];
-        return Card(
-          margin: const EdgeInsets.only(bottom: 8),
-          child: Padding(
-            padding: const EdgeInsets.fromLTRB(14, 10, 10, 10),
-            child: Row(
-              children: [
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(bid.playerName,
-                          style: theme.textTheme.titleMedium
-                              ?.copyWith(fontSize: 14),
-                          overflow: TextOverflow.ellipsis),
-                      Text('${bid.club} · matchday ${bid.matchday}',
-                          style: theme.textTheme.bodySmall),
-                      const SizedBox(height: 4),
-                      Text(_euro(bid.fee),
-                          style: theme.textTheme.titleSmall
-                              ?.copyWith(color: AppTheme.pitchGreen)),
-                    ],
+      children: [
+        if (squadAtMinimum) ...[
+          Card(
+            color: theme.colorScheme.errorContainer.withValues(alpha: 0.35),
+            child: Padding(
+              padding: const EdgeInsets.all(12),
+              child: Row(
+                children: [
+                  const Icon(Icons.info_outline, size: 18),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Text(
+                      'Your squad is at the 16-player minimum: accepting any of '
+                      'these would leave it short. Sign or promote a player '
+                      'first, then come back.',
+                      style: theme.textTheme.bodySmall,
+                    ),
                   ),
-                ),
-                TextButton(
-                  onPressed: () => onReject(bid),
-                  child: const Text('Reject'),
-                ),
-                FilledButton(
-                  onPressed: () => onAccept(bid),
-                  child: const Text('Accept'),
-                ),
-              ],
+                ],
+              ),
             ),
           ),
-        );
-      },
+          const SizedBox(height: 8),
+        ],
+        if (permanent.isNotEmpty) ...[
+          Text('Permanent offers', style: theme.textTheme.titleSmall),
+          const SizedBox(height: 6),
+          for (final bid in permanent)
+            _OfferCard(
+              bid: bid,
+              onAccept: () => onAccept(bid),
+              onReject: () => onReject(bid),
+            ),
+        ],
+        if (loans.isNotEmpty) ...[
+          const SizedBox(height: 8),
+          Text('Loan offers', style: theme.textTheme.titleSmall),
+          const SizedBox(height: 6),
+          for (final bid in loans)
+            _OfferCard(
+              bid: bid,
+              onAccept: () => onAccept(bid),
+              onReject: () => onReject(bid),
+            ),
+        ],
+      ],
+    );
+  }
+}
+
+class _OfferCard extends StatelessWidget {
+  const _OfferCard({
+    required this.bid,
+    required this.onAccept,
+    required this.onReject,
+  });
+
+  final IncomingBid bid;
+  final VoidCallback onAccept;
+  final VoidCallback onReject;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Card(
+      margin: const EdgeInsets.only(bottom: 8),
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(14, 10, 10, 10),
+        child: Row(
+          children: [
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(bid.playerName,
+                      style:
+                          theme.textTheme.titleMedium?.copyWith(fontSize: 14),
+                      overflow: TextOverflow.ellipsis),
+                  Text('${bid.club} · matchday ${bid.matchday}',
+                      style: theme.textTheme.bodySmall),
+                  const SizedBox(height: 4),
+                  if (bid.isLoan)
+                    _Tag(
+                      text: 'Loan · they pay ${bid.wageSharePercent}% '
+                          'of his wage',
+                      color: Colors.orange,
+                    )
+                  else
+                    Text(_euro(bid.fee),
+                        style: theme.textTheme.titleSmall
+                            ?.copyWith(color: AppTheme.pitchGreen)),
+                ],
+              ),
+            ),
+            TextButton(
+              onPressed: onReject,
+              child: const Text('Reject'),
+            ),
+            FilledButton(
+              onPressed: onAccept,
+              child: Text(bid.isLoan ? 'Loan him' : 'Accept'),
+            ),
+          ],
+        ),
+      ),
     );
   }
 }
@@ -1035,6 +1288,8 @@ class _MyPlayersTab extends StatelessWidget {
         final player = sorted[index];
         final (listed, asking) = transferListingOf(player);
         final expiry = player.contractExpiry?.year;
+        final loanedIn = player.hiddenAttributes['onLoanFrom'] as String?;
+        final loanListed = loanListingOf(player);
         return _PlayerRow(
           player: player,
           priceLabel: listed && asking != null
@@ -1043,11 +1298,15 @@ class _MyPlayersTab extends StatelessWidget {
                   .calculateTransferValue(player, seasonYear: seasonYear)),
           priceColor: listed ? Colors.orange : null,
           shortlisted: listed,
-          footnote: listed && asking != null
-              ? 'Listed · asking ${_euro(asking)}'
-              : expiry != null
-                  ? 'Contract to $expiry'
-                  : 'No contract data',
+          footnote: loanedIn != null
+              ? 'On loan from $loanedIn until $seasonYear'
+              : listed && asking != null
+                  ? 'Listed · asking ${_euro(asking)}'
+                  : loanListed
+                      ? 'Loan listed'
+                      : expiry != null
+                          ? 'Contract to $expiry'
+                          : 'No contract data',
           onTap: () => onOpen(player),
           actions: [
             _RowAction(
@@ -1097,9 +1356,16 @@ class _NewsTab extends StatelessWidget {
         final icon = switch (item.type) {
           'signing' => Icons.check_circle_outline,
           'hijack' => Icons.warning_amber_rounded,
+          'rival' => Icons.public,
           'collapse' => Icons.link_off,
           'deadline' => Icons.timer_outlined,
           'sale' => Icons.swap_horiz,
+          'loan' => Icons.event_repeat,
+          'unsettled' => Icons.sentiment_dissatisfied,
+          'request' => Icons.outbox_outlined,
+          'settled' => Icons.sentiment_satisfied_alt,
+          'summary' => Icons.receipt_long_outlined,
+          'minimum' => Icons.groups_2_outlined,
           _ => Icons.gavel_outlined,
         };
         return Card(
@@ -1485,6 +1751,77 @@ class _BidDialogState extends State<_BidDialog> {
       ],
     );
   }
+}
+
+/// Loan offer dialog: what share of the player's wage the manager will pay.
+Future<void> openLoanDialog(
+  BuildContext context,
+  WidgetRef ref,
+  Player player,
+) async {
+  final session = ref.read(careerSessionProvider);
+  if (session == null) return;
+  const service = TransferMarketService();
+  final db = ref.read(playerDatabaseProvider).valueOrNull;
+  final owner = db?.teams.where((t) => t.name == player.currentTeam).firstOrNull;
+  final expected = service.loanWageShare(player, owner);
+  // The dropdown must contain exactly one item matching its value, so every
+  // share loanWageShare can return is offered, and the initial value is
+  // snapped onto the nearest option for any other value.
+  const shares = [30, 40, 50, 60, 70, 100];
+  var share = shares.reduce(
+      (a, b) => (a - expected).abs() <= (b - expected).abs() ? a : b);
+
+  final confirmed = await showDialog<bool>(
+    context: context,
+    builder: (context) => StatefulBuilder(
+      builder: (context, setLocal) => AlertDialog(
+        title: Text('Loan ${player.name}?'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              'No fee. A season-long loan from ${player.currentTeam}, and he '
+              'goes back at the end of it.\n'
+              'They want you to cover at least $expected% of his '
+              '${_euro(player.weeklyWage)}/wk wage.',
+              style: Theme.of(context).textTheme.bodySmall,
+            ),
+            const SizedBox(height: 12),
+            DropdownButtonFormField<int>(
+              initialValue: share,
+              decoration: const InputDecoration(labelText: 'Your wage share'),
+              items: [
+                for (final s in shares)
+                  DropdownMenuItem(value: s, child: Text('$s%')),
+              ],
+              onChanged: (v) => setLocal(() => share = v ?? share),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Make the offer'),
+          ),
+        ],
+      ),
+    ),
+  );
+  if (confirmed != true || !context.mounted) return;
+
+  final done = offerLoanDeal(ref, player, wageSharePercent: share);
+  _snack(
+    context,
+    done
+        ? '${player.name} joins on loan until the end of the season.'
+        : ref.read(transferBlockReasonProvider) ?? 'That loan fell through.',
+  );
 }
 
 /// What the manager put on the contract sheet.

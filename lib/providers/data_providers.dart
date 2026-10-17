@@ -1,10 +1,11 @@
+import 'package:flutter/foundation.dart' show compute;
 import 'package:flutter/services.dart' show rootBundle;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../core/models/player.dart';
 import '../core/models/team.dart';
-import '../core/services/csv_loader_service.dart';
 import '../core/services/transfer_market_service.dart';
+import '../core/utils/csv_parser.dart' show parseCsvPlayers;
 
 /// Asset path of the bundled player database.
 const String kPlayerCsvAsset = 'lib/data/csv/EAFC26-Men.csv';
@@ -24,6 +25,23 @@ class PlayerDatabase {
   final List<Team> teams;
   final List<LeagueInfo> leagues;
   final Map<String, List<Player>> playersByTeam;
+}
+
+/// Parses the CSV rows on a worker isolate so the ~750 ms conversion
+/// (16k players) never freezes the UI thread. Signature is isolate-safe:
+/// `parseCsvPlayers` is a top-level function with no captured state.
+///
+/// Returns false when the isolate path fails — the provider treats that the
+/// same way a parse error was treated before (empty failure database so the
+/// startup screen can offer a retry).
+Future<bool> _parsePlayers(String csvString, List<Player> out) async {
+  try {
+    final parsed = await compute(parseCsvPlayers, csvString);
+    out.addAll(parsed);
+    return parsed.isNotEmpty;
+  } catch (_) {
+    return false;
+  }
 }
 
 /// A league derived from the player database.
@@ -52,18 +70,16 @@ class LeagueInfo {
 /// non-empty = ready.
 final playerDatabaseProvider =
     FutureProvider<PlayerDatabase>((ref) async {
-  final loader = CsvLoaderService(
-    assetSource: (path) async {
-      try {
-        return await rootBundle.loadString(path);
-      } catch (_) {
-        return null;
-      }
-    },
-  );
+  Future<String?> readAsset() async {
+    try {
+      return await rootBundle.loadString(kPlayerCsvAsset);
+    } catch (_) {
+      return null;
+    }
+  }
 
-  final ok = await loader.loadFromAsset(kPlayerCsvAsset);
-  if (!ok || loader.players.isEmpty) {
+  final csvString = await readAsset();
+  if (csvString == null || csvString.isEmpty) {
     return const PlayerDatabase(
       players: [],
       teams: [],
@@ -72,7 +88,16 @@ final playerDatabaseProvider =
     );
   }
 
-  final players = loader.players;
+  final players = <Player>[];
+  final ok = await _parsePlayers(csvString, players);
+  if (!ok || players.isEmpty) {
+    return const PlayerDatabase(
+      players: [],
+      teams: [],
+      leagues: [],
+      playersByTeam: {},
+    );
+  }
   final byTeam = <String, List<Player>>{};
   for (final p in players) {
     byTeam.putIfAbsent(p.currentTeam, () => []).add(p);

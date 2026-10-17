@@ -17,6 +17,7 @@ class Fixture {
     this.homeGoals = 0,
     this.awayGoals = 0,
     this.played = false,
+    this.competition = 'league',
   });
 
   final String homeTeamId;
@@ -26,6 +27,11 @@ class Fixture {
   int homeGoals;
   int awayGoals;
   bool played;
+
+  /// Which competition the fixture belongs to: `'league'` counts towards the
+  /// table, `'cup'` comes out of the knockout schedule and never records
+  /// points. Older saves read back as `'league'`, which is exactly right.
+  final String competition;
 
   bool involves(String teamId) => homeTeamId == teamId || awayTeamId == teamId;
 
@@ -68,6 +74,7 @@ class Fixture {
         'homeGoals': homeGoals,
         'awayGoals': awayGoals,
         'played': played,
+        'competition': competition,
       };
 
   /// Reads a fixture back from Hive, which hands maps back as
@@ -80,6 +87,7 @@ class Fixture {
         homeGoals: (json['homeGoals'] as num?)?.toInt() ?? 0,
         awayGoals: (json['awayGoals'] as num?)?.toInt() ?? 0,
         played: json['played'] as bool? ?? false,
+        competition: json['competition'] as String? ?? 'league',
       );
 }
 

@@ -1,3 +1,4 @@
+import 'cup.dart';
 import 'fixture.dart';
 
 /// One club's season record. Points are derived rather than stored twice, so
@@ -80,6 +81,7 @@ class SeasonState {
     Map<String, LeagueRecord>? records,
     List<List<Fixture>>? rounds,
     List<String>? legacyFixturePairs,
+    this.cup,
   })  : _totalMatchdaysOverride = totalMatchdays,
         _legacyFixturePairs = legacyFixturePairs ?? const <String>[],
         rounds = rounds ?? const <List<Fixture>>[],
@@ -95,7 +97,18 @@ class SeasonState {
 
   /// The schedule: one list of fixtures per matchday. This is the single source
   /// of truth for who plays whom.
+  ///
+  /// Cup rounds live in the same list: a knockout round is spliced between
+  /// league matchdays at an absolute position recorded in [cup], and its
+  /// fixtures carry `competition: 'cup'`. Position-based reading keeps the
+  /// merged counter coherent.
   final List<List<Fixture>> rounds;
+
+  /// The knockout cup attached to this season, or null for seasons played
+  /// before cups existed (older saves get one when the next season starts).
+  /// The bracket itself is expressed through the schedule; this object holds
+  /// only the round anchors and byes.
+  final CupState? cup;
 
   /// Every club's record, keyed by team id.
   final Map<String, LeagueRecord> records;

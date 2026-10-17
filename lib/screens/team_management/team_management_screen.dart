@@ -101,6 +101,9 @@ class _TeamManagementScreenState extends ConsumerState<TeamManagementScreen> {
     List<Player> allPlayers,
   ) {
     final totalCount = allPlayers.length;
+    // One OVR rank pass per build; each row used to copy + sort the whole
+    // squad inside the list builder.
+    final rankIndex = squadRankIndex(allPlayers);
     return Column(
       children: [
         Padding(
@@ -171,7 +174,10 @@ class _TeamManagementScreenState extends ConsumerState<TeamManagementScreen> {
                     final player = squad[index];
                     return _PlayerCard(
                       player: player,
-                      status: squadStatusOf(player, allPlayers),
+                      // The rank index is computed once per build; per-row
+                      // squad copies + sorts used to run at scroll speed.
+                      status: squadStatusOf(player, allPlayers,
+                          rankIndex: rankIndex),
                       onTap: () => showPlayerDetailSheet(context, player),
                     );
                   },

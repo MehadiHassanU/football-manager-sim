@@ -13,6 +13,20 @@ class Team {
   final int stadiumCapacity;
   int budget;
   double transferBudget;
+
+  /// Weekly wage ceiling for the season. Signings and loans that would push
+  /// the bill past this are refused, always — not only when FFP is enabled.
+  ///
+  /// At the start of a career it is derived from the bill the club already
+  /// carries plus a little headroom (see `backfillTransferData`), so the
+  /// ceiling bites instead of sitting far above anything the board would
+  /// sanction. Zero means "no ceiling configured" — saves written before the
+  /// field existed, and the stub clubs the tests build.
+  double wageBudget;
+
+  /// Wages the club is still paying for players out on loan. They are not in
+  /// [squad], so nothing else would count them.
+  double loanedOutWages = 0;
   String color;
   String badgeUrl;
   int reputation; // 0-100
@@ -64,6 +78,8 @@ class Team {
     this.goalsFor = 0,
     this.goalsAgainst = 0,
     double? transferBudget,
+    double? wageBudget,
+    this.loanedOutWages = 0,
     this.totalWages = 0,
     this.revenue = 0,
     double? sackablePercent,
@@ -71,6 +87,7 @@ class Team {
   })  : squad = squad ?? [],
         youthAcademy = youthAcademy ?? [],
         transferBudget = transferBudget ?? budget * 0.3,
+        wageBudget = wageBudget ?? 0,
         sackablePercent = sackablePercent ?? 5.0,
         fanLoyalty = fanLoyalty ?? 75.0;
 
@@ -90,6 +107,8 @@ class Team {
         'stadiumCapacity': stadiumCapacity,
         'budget': budget,
         'transferBudget': transferBudget,
+        'wageBudget': wageBudget,
+        'loanedOutWages': loanedOutWages,
         'color': color,
         'badgeUrl': badgeUrl,
         'reputation': reputation,
@@ -120,6 +139,8 @@ class Team {
         stadiumCapacity: json['stadiumCapacity'],
         budget: json['budget'],
         transferBudget: json['transferBudget'],
+        wageBudget: json['wageBudget'],
+        loanedOutWages: json['loanedOutWages'],
         color: json['color'],
         badgeUrl: json['badgeUrl'],
         reputation: json['reputation'],

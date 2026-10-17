@@ -371,6 +371,22 @@ void main() {
       }
     });
 
+    test('never leaves a player already out of contract', () {
+      // Ids divisible by four used to expire on the first day of a career,
+      // which handed the manager a quarter of the database for free.
+      final squad = [
+        for (var i = 0; i < 12; i++)
+          stubPlayer(id: 4000 + i, name: 'P$i', ovr: 72),
+      ];
+      final team = club('t', squad: squad);
+      service.backfillTransferData([team], 2026);
+      for (final player in squad) {
+        expect(service.isFreeAgent(player, 2026), isFalse,
+            reason: 'player ${player.id} must still be under contract');
+        expect(player.contractExpiry!.year, greaterThan(2026));
+      }
+    });
+
     test('never overwrites an existing contract or reputation', () {
       final player = stubPlayer(id: 1, name: 'P', ovr: 80)
         ..contractExpiry = DateTime(2031, 6, 30)

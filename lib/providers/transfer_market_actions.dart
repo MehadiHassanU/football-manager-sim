@@ -301,6 +301,17 @@ bool offerPersonalTerms(
   }
   player.requestedTransfer = false;
   player.hiddenAttributes.remove('transferListed');
+  desk.recordMove(TransferMove(
+    playerId: player.id,
+    playerName: player.name,
+    fromClub: negotiation.sellerClub,
+    toClub: session.team.name,
+    kind: fee == 0 ? 'free' : 'permanent',
+    fee: fee,
+    wage: wage,
+    year: session.season.currentYear,
+    matchday: session.season.currentMatchday,
+  ));
 
   desk.replace(negotiation.copyWith(
     stage: DealStage.completed,
@@ -333,7 +344,7 @@ bool acceptIncomingBid(WidgetRef ref, IncomingBid bid) {
   final player =
       session.team.squad.where((p) => p.id == bid.playerId).firstOrNull;
   if (player == null) return false;
-  if (!sellPlayer(ref, player, bid.fee)) return false;
+  if (!sellPlayer(ref, player, bid.fee, buyerClub: bid.club)) return false;
   session.transferDesk.incomingBids
       .removeWhere((b) => b.playerId == bid.playerId);
   session.transferDesk.addNews(TransferNewsItem(
@@ -343,6 +354,180 @@ bool acceptIncomingBid(WidgetRef ref, IncomingBid bid) {
         'The fee has been added to your transfer budget.',
     matchday: session.season.currentMatchday,
   ));
+  notifySessionChanged(ref);
+  saveCareerNow(ref);
+  return true;
+}
+
+/// Accepts a loan offer for one of the manager's players.
+///
+/// He leaves the squad for the rest of the season, but the club keeps his
+/// registration (and the part of his wage the borrower is not covering), so he
+/// comes back at the rollover rather than being lost.
+bool acceptLoanOffer(WidgetRef ref, IncomingBid bid) {
+  final session = ref.read(careerSessionProvider);
+  if (session == null) return false;
+  final player =
+      session.team.squad.where((p) => p.id == bid.playerId).firstOrNull;
+  if (player == null) return false;
+
+  // A loan takes him out of the squad for the rest of the season, so it is
+  // bound by the same 16-player floor as a sale. Checked here rather than
+  // only when offers are generated, because an offer from a previous
+  // matchday can still be sitting in the Offers tab.
+  if (session.team.squad.length <= 16) {
+    ref.read(transferBlockReasonProvider.notifier).state =
+        'Your squad must keep at least 16 players. Sign someone first.';
+    return false;
+  }
+
+  final db = ref.read(playerDatabaseProvider).valueOrNull;
+  final borrower = db?.teams.where((t) => t.name == bid.club).firstOrNull;
+  final fullWage = player.weeklyWage;
+  final share = bid.wageSharePercent.clamp(0, 100);
+
+  session.team.squad.removeWhere((p) => p.id == player.id);
+  session.team.loanedOutWages += fullWage * (100 - share) / 100;
+  session.transferDesk.loans.add(LoanDeal(
+    playerId: player.id,
+    playerName: player.name,
+    fromClub: session.team.name,
+    toClub: bid.club,
+    wageSharePercent: share,
+    untilYear: session.season.currentYear,
+    matchday: session.season.currentMatchday,
+    wage: fullWage.round(),
+  ));
+  session.transferDesk.recordMove(TransferMove(
+    playerId: player.id,
+    playerName: player.name,
+    fromClub: session.team.name,
+    toClub: bid.club,
+    kind: 'loan',
+    fee: 0,
+    wage: fullWage.round(),
+    year: session.season.currentYear,
+    matchday: session.season.currentMatchday,
+  ));
+  if (db != null && borrower != null) {
+    for (final team in db.teams) {
+      team.squad.removeWhere((p) => p.id == player.id);
+    }
+    player.currentTeam = borrower.name;
+    borrower.squad.add(player);
+  }
+  session.transferDesk.incomingBids
+      .removeWhere((b) => b.playerId == bid.playerId);
+  session.transferDesk.addNews(TransferNewsItem(
+    type: 'sale',
+    title: '${player.name} joins ${bid.club} on loan',
+    body: '${bid.club} pay $share% of his wage. He returns at the end of the '
+        'season.',
+    matchday: session.season.currentMatchday,
+  ));
+  notifySessionChanged(ref);
+  saveCareerNow(ref);
+  return true;
+}
+
+/// Borrows a player for the rest of the season.
+///
+/// [wageSharePercent] is what the manager offers to pay; the owner has an
+/// expectation and will refuse a lowball. No fee changes hands, and the player
+/// goes home at the rollover.
+bool offerLoanDeal(
+  WidgetRef ref,
+  Player player, {
+  int wageSharePercent = 100,
+}) {
+  final session = ref.read(careerSessionProvider);
+  if (session == null) return false;
+  const service = TransferMarketService();
+  final season = session.season;
+  final window = TransferWindow.of(season);
+  if (!window.isOpen) {
+    ref.read(transferBlockReasonProvider.notifier).state =
+        'Loans are only possible while the window is open.';
+    return false;
+  }
+  if (session.team.squad.any((p) => p.id == player.id)) {
+    ref.read(transferBlockReasonProvider.notifier).state =
+        'He is already at your club.';
+    return false;
+  }
+
+  final db = ref.read(playerDatabaseProvider).valueOrNull;
+  final owner = db?.teams.where((t) => t.name == player.currentTeam).firstOrNull;
+  if (!service.loanAvailable(player, owner)) {
+    ref.read(transferBlockReasonProvider.notifier).state =
+        '${player.currentTeam} are not willing to loan him out.';
+    return false;
+  }
+  final expected = service.loanWageShare(player, owner);
+  if (wageSharePercent < expected) {
+    ref.read(transferBlockReasonProvider.notifier).state =
+        '${player.currentTeam} want you to cover at least $expected% of his '
+        'wage.';
+    return false;
+  }
+  if (session.team.squad.length >= 25) {
+    ref.read(transferBlockReasonProvider.notifier).state =
+        'Your squad is full (25 players).';
+    return false;
+  }
+
+  final share = wageSharePercent.clamp(0, 100);
+  final loanCost = service.loanCost(player, share).toDouble();
+  final refusal = wageCeilingRefusal(session.team, loanCost);
+  if (refusal != null) {
+    ref.read(transferBlockReasonProvider.notifier).state = refusal;
+    return false;
+  }
+
+  final fullWage = player.weeklyWage;
+  player
+    ..weeklyWage = loanCost
+    ..hiddenAttributes['onLoanFrom'] = player.currentTeam
+    ..hiddenAttributes['loanUntilYear'] = season.currentYear;
+  session.team.squad.add(player);
+  session.transferDesk.loans.add(LoanDeal(
+    playerId: player.id,
+    playerName: player.name,
+    fromClub: player.hiddenAttributes['onLoanFrom'] as String,
+    toClub: session.team.name,
+    wageSharePercent: share,
+    untilYear: season.currentYear,
+    matchday: season.currentMatchday,
+    wage: fullWage.round(),
+  ));
+  session.transferDesk.recordMove(TransferMove(
+    playerId: player.id,
+    playerName: player.name,
+    fromClub: player.hiddenAttributes['onLoanFrom'] as String,
+    toClub: session.team.name,
+    kind: 'loan',
+    fee: 0,
+    wage: fullWage.round(),
+    year: season.currentYear,
+    matchday: season.currentMatchday,
+  ));
+  if (db != null) {
+    for (final team in db.teams) {
+      team.squad.removeWhere((p) => p.id == player.id);
+    }
+    final mirror = db.teams.where((t) => t.name == session.team.name).firstOrNull;
+    mirror?.squad.add(player);
+    player.currentTeam = session.team.name;
+  }
+  session.transferDesk.addNews(TransferNewsItem(
+    type: 'signing',
+    title: '${player.name} arrives on loan',
+    body: 'No fee. You pay $share% of his '
+        '${TransferMarketService.money(fullWage)}/wk wage until the end of '
+        'the season.',
+    matchday: season.currentMatchday,
+  ));
+  ref.read(transferBlockReasonProvider.notifier).state = null;
   notifySessionChanged(ref);
   saveCareerNow(ref);
   return true;
@@ -376,12 +561,24 @@ String transferReaction({
       return 'Fans: "This is the statement signing we wanted."';
     case 'hijack':
       return 'Board: "We were too slow. That cannot happen again."';
+    case 'rival':
+      return 'Fans: "Look at them strengthen while we sit still."';
     case 'collapse':
       return 'Fans: "Amateur hour in the recruitment office."';
     case 'sale':
       return 'Board: "Good money for a player who wanted out."';
     case 'deadline':
       return 'Board: "Get it done before the window shuts."';
+    case 'unsettled':
+      return 'Fans: "Play him or lose him — it is that simple."';
+    case 'request':
+      return 'Board: "A transfer request means the price just dropped."';
+    case 'settled':
+      return 'Fans: "Good to see him smiling again."';
+    case 'summary':
+      return 'Board: "We will judge the window when the table settles."';
+    case 'minimum':
+      return 'Board: "A squad that thin is one injury from a crisis."';
     default:
       return 'Fans are watching this one closely.';
   }

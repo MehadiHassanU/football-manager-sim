@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
+import '../../core/models/team.dart';
 import '../../providers/career_session_provider.dart';
 import '../../providers/data_providers.dart';
 import '../../ui/ui.dart';
@@ -23,6 +24,11 @@ class LeagueTableScreen extends ConsumerWidget {
     final standings = session.season.table();
     final db = ref.watch(playerDatabaseProvider).valueOrNull;
     final theme = Theme.of(context);
+    // Team lookup index built once per build instead of a linear scan per
+    // visible row while the list scrolls.
+    final teamById = {
+      for (final t in db?.teams ?? const <Team>[]) t.id: t,
+    };
 
     return Scaffold(
       appBar: AppBar(
@@ -46,8 +52,7 @@ class LeagueTableScreen extends ConsumerWidget {
                 if (index == 0) return _TableHeader(theme: theme);
                 final row = standings[index - 1];
                 final isUser = row.teamId == session.team.id;
-                final team =
-                    db?.teams.where((t) => t.id == row.teamId).firstOrNull;
+                final team = teamById[row.teamId];
                 final record = row.record;
                 final gd = record.goalDifference;
                 return Card(

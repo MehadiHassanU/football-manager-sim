@@ -401,4 +401,482 @@ void main() {
     expect(copy.rivalClub, 'Club 5');
     expect(copy.stage, DealStage.bidding);
   });
+
+  testWidgets('the ledger replays a signing onto a fresh database',
+      (tester) async {
+    final db = stubLeagueDatabase(10);
+    final session = _sessionFor(db);
+    final container = await _containerFor(db, session);
+    final target = _target(db);
+    final seller = target.currentTeam;
+
+    // A free agent: no fee to negotiate, straight to terms.
+    target.contractExpiry = DateTime(2026, 6, 30);
+    final demand = TransferMarketService().wageDemand(target, session.team);
+    await _run(tester, container, (ref) => submitBid(ref, target, 0));
+    await _run(
+      tester,
+      container,
+      (ref) => offerPersonalTerms(
+        ref,
+        target,
+        wage: demand,
+        bonus: 0,
+        years: 3,
+        role: 'First Team',
+      ),
+    );
+
+    expect(session.team.squad.any((p) => p.id == target.id), isTrue);
+    expect(session.transferDesk.ledger, isNotEmpty);
+
+    // Restart: every squad comes back from the CSV, then the ledger replays.
+    final fresh = stubLeagueDatabase(10);
+    TransferMarketService().applyTransferLedger(
+      players: fresh.players,
+      teams: fresh.teams,
+      moves: session.transferDesk.ledger,
+      userClub: session.team.name,
+    );
+
+    final replayed = fresh.players.firstWhere((p) => p.id == target.id);
+    expect(replayed.currentTeam, session.team.name);
+    final oldClub = fresh.teams.firstWhere((t) => t.name == seller);
+    expect(oldClub.squad.any((p) => p.id == target.id), isFalse,
+        reason: 'the selling club must not keep him after a reload');
+
+    // Replaying again changes nothing.
+    TransferMarketService().applyTransferLedger(
+      players: fresh.players,
+      teams: fresh.teams,
+      moves: session.transferDesk.ledger,
+      userClub: session.team.name,
+    );
+    final oldClub2 = fresh.teams.firstWhere((t) => t.name == seller);
+    expect(oldClub2.squad.where((p) => p.id == target.id), isEmpty);
+  });
+
+  testWidgets('the ledger moves a sold player into the buyer squad',
+      (tester) async {
+    final db = stubLeagueDatabase(10);
+    final session = _sessionFor(db);
+    final container = await _containerFor(db, session);
+    final squad = session.team.squad;
+    squad.addAll([
+      stubPlayer(id: 9001, name: 'Extra A', team: session.team.name),
+      stubPlayer(id: 9002, name: 'Extra B', team: session.team.name),
+    ]);
+    for (final player in squad) {
+      player.hiddenAttributes['transferListed'] = true;
+    }
+
+    await _run(tester, container, (ref) => advanceTransferDesk(ref, session));
+    final bid = session.transferDesk.incomingBids.first;
+    await _run(tester, container, (ref) => acceptIncomingBid(ref, bid));
+
+    final move = session.transferDesk.ledger
+        .firstWhere((m) => m.playerId == bid.playerId);
+    expect(move.toClub, bid.club);
+    expect(move.fee, bid.fee);
+
+    final fresh = stubLeagueDatabase(10);
+    TransferMarketService().applyTransferLedger(
+      players: fresh.players,
+      teams: fresh.teams,
+      moves: session.transferDesk.ledger,
+      userClub: session.team.name,
+    );
+    final buyer = fresh.teams.firstWhere((t) => t.name == bid.club);
+    expect(buyer.squad.any((p) => p.id == bid.playerId), isTrue,
+        reason: 'the buyer must actually own him after a reload');
+    final replayed = fresh.players.firstWhere((p) => p.id == bid.playerId);
+    expect(replayed.currentTeam, bid.club);
+  });
+
+  testWidgets('a hijack really moves the player to the rival', (tester) async {
+    final db = stubLeagueDatabase(10);
+    final session = _sessionFor(db, matchday: 2);
+    final container = await _containerFor(db, session);
+    final target = _target(db);
+    final seller = target.currentTeam;
+    session.transferDesk.replace(TransferNegotiation(
+      playerId: target.id,
+      playerName: target.name,
+      sellerClub: seller,
+      askingPrice: 5000000,
+      reservationPrice: 4000000,
+      stage: DealStage.bidding,
+      round: 1,
+      patience: 2,
+      lastOffer: 3000000,
+      counterOffer: 4500000,
+      startedMatchday: 0,
+      rivalDeadlineMatchday: 2,
+      wageDemand: 30000,
+      requiredReputation: 70,
+      message: 'They want more.',
+      rivalClub: 'Club 4',
+    ));
+
+    await _run(tester, container, (ref) => advanceTransferDesk(ref, session));
+
+    expect(target.currentTeam, 'Club 4');
+    final rival = db.teams.firstWhere((t) => t.name == 'Club 4');
+    expect(rival.squad.any((p) => p.id == target.id), isTrue);
+    expect(db.teams.firstWhere((t) => t.name == seller).squad.any(
+          (p) => p.id == target.id,
+        ),
+        isFalse);
+
+    final move = session.transferDesk.ledger
+        .firstWhere((m) => m.playerId == target.id);
+    expect(move.toClub, 'Club 4');
+    expect(move.kind, 'permanent');
+  });
+
+  testWidgets('a loaned-out player comes back at the rollover',
+      (tester) async {
+    final db = stubLeagueDatabase(10);
+    final session = _sessionFor(db);
+    final container = await _containerFor(db, session);
+    final squad = session.team.squad;
+    squad.addAll([
+      stubPlayer(id: 9001, name: 'Extra A', team: session.team.name),
+      stubPlayer(id: 9002, name: 'Extra B', team: session.team.name),
+    ]);
+    for (final player in squad) {
+      player
+        ..hiddenAttributes['loanListed'] = true
+        // The stub squads are wage-less, so set a real wage: a loaned-out
+        // player's parent club keeps paying its share of it.
+        ..weeklyWage = 20000;
+    }
+    final before = {for (final p in squad) p.id: p.weeklyWage};
+
+    await _run(tester, container, (ref) => advanceTransferDesk(ref, session));
+    final offer = session.transferDesk.incomingBids.firstWhere(
+      (b) => b.isLoan,
+      orElse: () => throw StateError('expected a loan offer'),
+    );
+    await _run(tester, container, (ref) => acceptLoanOffer(ref, offer));
+
+    expect(session.team.squad.any((p) => p.id == offer.playerId), isFalse,
+        reason: 'he is playing elsewhere for the season');
+    expect(session.transferDesk.loans, hasLength(1));
+    expect(session.team.loanedOutWages, greaterThan(0),
+        reason: 'the club still pays its share of his wage');
+
+    // Season end: everyone comes home.
+    final loanedOut = session.transferDesk.loans.single;
+    final postSeason = _sessionFor(db).season;
+    final ending = CareerSession(
+      manager: session.manager,
+      team: session.team,
+      season: SeasonState(
+        leagueId: 'test_league',
+        currentMatchday: 18,
+        currentYear: postSeason.currentYear,
+        isPreSeason: false,
+        records: postSeason.records,
+        rounds: postSeason.rounds,
+      ),
+      transferDesk: session.transferDesk,
+    );
+    final nextContainer = await _containerFor(db, ending);
+    await _run(tester, nextContainer, (ref) => rollIntoNextSeason(ref));
+
+    final returned = ending.team.squad
+        .firstWhere((p) => p.id == loanedOut.playerId);
+    expect(returned.weeklyWage, before[loanedOut.playerId]);
+    expect(ending.transferDesk.loans, isEmpty);
+    expect(ending.team.loanedOutWages, 0);
+  });
+
+  testWidgets('a borrowed player goes home at the rollover', (tester) async {
+    final db = stubLeagueDatabase(10);
+    final session = _sessionFor(db);
+    final container = await _containerFor(db, session);
+    final owner = db.teams[1];
+    // Chosen before the filler arrives, so the target is a real database
+    // player rather than the squad padding.
+    final target = _target(db)..hiddenAttributes['transferListed'] = true;
+    final fullWage = target.weeklyWage;
+    // The stub clubs sit at the 16-player minimum, which blocks loans.
+    owner.squad.add(stubPlayer(
+      id: 9100,
+      name: 'Depth',
+      team: owner.name,
+      ovr: 60,
+    ));
+
+    await _run(
+      tester,
+      container,
+      (ref) => offerLoanDeal(ref, target, wageSharePercent: 50),
+    );
+
+    expect(session.team.squad.any((p) => p.id == target.id), isTrue);
+    expect(target.hiddenAttributes['onLoanFrom'], owner.name);
+    expect(target.weeklyWage, fullWage * 0.5,
+        reason: 'he only costs the borrowing club its share');
+    expect(session.transferDesk.loans, hasLength(1));
+
+    final postSeason = _sessionFor(db).season;
+    final ending = CareerSession(
+      manager: session.manager,
+      team: session.team,
+      season: SeasonState(
+        leagueId: 'test_league',
+        currentMatchday: 18,
+        currentYear: postSeason.currentYear,
+        isPreSeason: false,
+        records: postSeason.records,
+        rounds: postSeason.rounds,
+      ),
+      transferDesk: session.transferDesk,
+    );
+    final nextContainer = await _containerFor(db, ending);
+    await _run(tester, nextContainer, (ref) => rollIntoNextSeason(ref));
+
+    expect(ending.team.squad.any((p) => p.id == target.id), isFalse);
+    expect(target.weeklyWage, fullWage);
+    expect(target.hiddenAttributes.containsKey('onLoanFrom'), isFalse);
+    expect(owner.squad.any((p) => p.id == target.id), isTrue,
+        reason: 'he belongs to his parent club again');
+  });
+
+  testWidgets('the day after deadline day reports what the window did',
+      (tester) async {
+    final db = stubLeagueDatabase(10);
+    // Matchday 4: the summer window shut after matchday 3.
+    final session = _sessionFor(db, matchday: 4);
+    final container = await _containerFor(db, session);
+    session.transferDesk.recordMove(TransferMove(
+      playerId: 4242,
+      playerName: 'Marquee Man',
+      fromClub: 'Club 3',
+      toClub: session.team.name,
+      kind: 'permanent',
+      fee: 5000000,
+      wage: 40000,
+      year: 2026,
+      matchday: 2,
+    ));
+
+    await _run(tester, container, (ref) => advanceTransferDesk(ref, session));
+
+    final summary = session.transferDesk.news
+        .firstWhere((n) => n.type == 'summary');
+    expect(summary.title, contains('summer window'));
+    expect(summary.body, contains('1 signing'));
+    expect(summary.body, contains('€5.0M spent'));
+
+    // The same matchday cannot publish the same summary twice.
+    await _run(tester, container, (ref) => advanceTransferDesk(ref, session));
+    expect(session.transferDesk.news.where((n) => n.type == 'summary'),
+        hasLength(1));
+  });
+
+  testWidgets('the winter summary counts only the winter business',
+      (tester) async {
+    final db = stubLeagueDatabase(10);
+    // The winter window runs 7-12 in this 18-round league, so matchday 13 is
+    // the morning after its deadline.
+    final session = _sessionFor(db, matchday: 13);
+    final container = await _containerFor(db, session);
+    const moves = <(int, int)>[(1, 2), (2, 10)];
+    for (final (id, matchday) in moves) {
+      session.transferDesk.recordMove(TransferMove(
+        playerId: 5000 + id,
+        playerName: 'Player $id',
+        fromClub: 'Club 3',
+        toClub: session.team.name,
+        kind: 'permanent',
+        fee: 1000000,
+        wage: 20000,
+        year: 2026,
+        matchday: matchday,
+      ));
+    }
+
+    await _run(tester, container, (ref) => advanceTransferDesk(ref, session));
+
+    final summary =
+        session.transferDesk.news.firstWhere((n) => n.type == 'summary');
+    expect(summary.title, contains('winter window'));
+    expect(summary.body, contains('1 signing'),
+        reason: 'the summer signing belongs to the summer summary');
+    expect(summary.body, contains('€1.0M spent'));
+  });
+
+  testWidgets('a squad at the minimum draws no offers and is told why',
+      (tester) async {
+    final db = stubLeagueDatabase(10);
+    final session = _sessionFor(db);
+    final container = await _containerFor(db, session);
+    expect(session.team.squad, hasLength(16));
+    for (final p in session.team.squad) {
+      p..hiddenAttributes['transferListed'] = true
+        // Real wages, or the ceiling test above would leak in here.
+        ..weeklyWage = 0;
+    }
+
+    await _run(tester, container, (ref) => advanceTransferDesk(ref, session));
+
+    expect(session.transferDesk.incomingBids, isEmpty,
+        reason: 'an offer nobody can accept is worse than no offer');
+    expect(
+      session.transferDesk.news.any((n) => n.type == 'minimum'),
+      isTrue,
+    );
+
+    // With cover added, the offers start arriving again.
+    session.team.squad
+        .add(stubPlayer(id: 9300, name: 'Cover', team: session.team.name));
+    await _run(tester, container, (ref) => advanceTransferDesk(ref, session));
+    expect(session.transferDesk.incomingBids, isNotEmpty);
+  });
+
+  testWidgets('an offer to loan a player out is refused at the minimum',
+      (tester) async {
+    final db = stubLeagueDatabase(10);
+    final session = _sessionFor(db);
+    final container = await _containerFor(db, session);
+    final player = session.team.squad.first;
+    final bid = IncomingBid(
+      playerId: player.id,
+      playerName: player.name,
+      club: 'Club 4',
+      fee: 0,
+      matchday: 1,
+      kind: 'loan',
+      wageSharePercent: 100,
+    );
+
+    await _run(tester, container, (ref) => acceptLoanOffer(ref, bid));
+
+    expect(session.transferDesk.loans, isEmpty);
+    expect(session.team.squad.any((p) => p.id == player.id), isTrue,
+        reason: 'he stays: the squad cannot go below 16');
+    expect(container.read(transferBlockReasonProvider), contains('16'));
+  });
+
+  testWidgets('a loan is refused when its wage share breaks the ceiling',
+      (tester) async {
+    final db = stubLeagueDatabase(10);
+    final session = _sessionFor(db);
+    final container = await _containerFor(db, session);
+    final owner = db.teams[1];
+    final target = _target(db)..hiddenAttributes['transferListed'] = true;
+    owner.squad.add(stubPlayer(
+      id: 9200,
+      name: 'Depth',
+      team: owner.name,
+      ovr: 60,
+    ));
+    // €100 of room against a wage that costs thousands a week.
+    session.team.wageBudget = weeklyWageBill(session.team) + 100;
+
+    await _run(
+      tester,
+      container,
+      (ref) => offerLoanDeal(ref, target, wageSharePercent: 100),
+    );
+
+    expect(session.team.squad.any((p) => p.id == target.id), isFalse);
+    expect(
+      container.read(transferBlockReasonProvider),
+      contains('wage budget'),
+    );
+
+    // With the ceiling raised, the same loan goes through: the block was the
+    // ceiling, not the paperwork.
+    session.team.wageBudget += target.weeklyWage * 2;
+    await _run(
+      tester,
+      container,
+      (ref) => offerLoanDeal(ref, target, wageSharePercent: 100),
+    );
+    expect(session.team.squad.any((p) => p.id == target.id), isTrue);
+  });
+
+  testWidgets('an ignored starter becomes unsettled and then asks to leave',
+      (tester) async {
+    final db = stubLeagueDatabase(10);
+    final session = _sessionFor(db, matchday: 6);
+    final container = await _containerFor(db, session);
+    final team = session.team;
+    team.matchesPlayed = 6;
+    final star = ([...team.squad]..sort((a, b) => b.ovr.compareTo(a.ovr)))
+        .first;
+    for (final p in team.squad) {
+      p.minutesPlayed = p.id == star.id ? 0 : 6 * 90;
+    }
+
+    await _run(tester, container, (ref) => assessSquadHappiness(ref, session));
+
+    expect(unsettledOf(star), isTrue,
+        reason: 'your best player is not getting minutes');
+    expect(star.requestedTransfer, isFalse,
+        reason: 'a warning comes before the request');
+    expect(
+      session.transferDesk.news.any(
+          (n) => n.type == 'unsettled' && n.title.contains(star.name)),
+      isTrue,
+    );
+
+    // Still no minutes two matchdays later: he hands in a request, which is
+    // what makes the market bring offers for him.
+    final later = CareerSession(
+      manager: session.manager,
+      team: team,
+      season: _season(9),
+      transferDesk: session.transferDesk,
+    );
+    await _run(tester, container, (ref) => assessSquadHappiness(ref, later));
+
+    expect(star.requestedTransfer, isTrue);
+    expect(session.transferDesk.news.any((n) => n.type == 'request'), isTrue);
+  });
+
+  testWidgets('a promise buys patience, and minutes settle him again',
+      (tester) async {
+    final db = stubLeagueDatabase(10);
+    final session = _sessionFor(db, matchday: 6);
+    final container = await _containerFor(db, session);
+    final team = session.team;
+    team.matchesPlayed = 6;
+    final star = ([...team.squad]..sort((a, b) => b.ovr.compareTo(a.ovr)))
+        .first;
+    for (final p in team.squad) {
+      p.minutesPlayed = p.id == star.id ? 0 : 6 * 90;
+    }
+
+    CareerSession at(int matchday) => CareerSession(
+          manager: session.manager,
+          team: team,
+          season: _season(matchday),
+          transferDesk: session.transferDesk,
+        );
+
+    await _run(tester, container, (ref) => assessSquadHappiness(ref, session));
+    await _run(tester, container, (ref) => promisePlayingTime(ref, star));
+    expect(star.hiddenAttributes['minutesPromise'], 6);
+
+    // Two matchdays on the promise is still holding.
+    await _run(tester, container, (ref) => assessSquadHappiness(ref, at(8)));
+    expect(star.requestedTransfer, isFalse,
+        reason: 'a promise buys three matchdays');
+
+    // The promise is broken, so he asks to leave.
+    await _run(tester, container, (ref) => assessSquadHappiness(ref, at(9)));
+    expect(star.requestedTransfer, isTrue);
+
+    // Minutes arrive at last: the complaint clears and the request is
+    // withdrawn, so the story can end well.
+    star.minutesPlayed = 9 * 90;
+    await _run(tester, container, (ref) => assessSquadHappiness(ref, at(11)));
+    expect(unsettledOf(star), isFalse);
+    expect(star.requestedTransfer, isFalse);
+  });
 }

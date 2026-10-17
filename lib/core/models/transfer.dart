@@ -12,12 +12,18 @@ class TransferWindow {
     required this.isOpen,
     required this.isDeadlineDay,
     required this.closesAtMatchday,
+    this.opensAtMatchday = -1,
   });
 
   final String label;
   final bool isOpen;
   final bool isDeadlineDay;
   final int closesAtMatchday;
+
+  /// The first matchday the window was open. Used to attribute moves to the
+  /// window that actually housed them, so the winter summary does not count
+  /// the summer's business as its own.
+  final int opensAtMatchday;
 
   static const TransferWindow _closed = TransferWindow(
     label: 'Window closed',
@@ -28,9 +34,15 @@ class TransferWindow {
 
   /// The summer window covers the opening matchdays; the winter window wraps
   /// the mid-season break. Everything else is closed except free agents.
-  factory TransferWindow.of(SeasonState season) {
+  factory TransferWindow.of(SeasonState season) =>
+      TransferWindow.on(season, season.currentMatchday);
+
+  /// The window as it stood on [matchday].
+  ///
+  /// Asking about a past matchday is how the desk spots that a window shut
+  /// yesterday, which is when the closing summary is published.
+  factory TransferWindow.on(SeasonState season, int matchday) {
     if (season.isPostSeason) return _closed;
-    final matchday = season.currentMatchday;
 
     final winterOpen = (season.winterBreakRound - 2).clamp(1, 99);
     final winterClose = (season.winterBreakRound + 3).clamp(winterOpen, 99);
@@ -40,6 +52,7 @@ class TransferWindow {
         isOpen: true,
         isDeadlineDay: matchday >= winterClose,
         closesAtMatchday: winterClose,
+        opensAtMatchday: winterOpen,
       );
     }
 
@@ -50,6 +63,7 @@ class TransferWindow {
         isOpen: true,
         isDeadlineDay: matchday >= summerClose,
         closesAtMatchday: summerClose,
+        opensAtMatchday: 0,
       );
     }
     return _closed;
@@ -282,6 +296,8 @@ class IncomingBid {
     required this.club,
     required this.fee,
     required this.matchday,
+    this.kind = 'permanent',
+    this.wageSharePercent = 0,
   });
 
   final int playerId;
@@ -290,12 +306,22 @@ class IncomingBid {
   final int fee;
   final int matchday;
 
+  /// `permanent` or `loan`.
+  final String kind;
+
+  /// On a loan offer, the share of the wage the borrowing club pays.
+  final int wageSharePercent;
+
+  bool get isLoan => kind == 'loan';
+
   Map<String, dynamic> toJson() => {
         'playerId': playerId,
         'playerName': playerName,
         'club': club,
         'fee': fee,
         'matchday': matchday,
+        'kind': kind,
+        'wageSharePercent': wageSharePercent,
       };
 
   factory IncomingBid.fromJson(Map<String, dynamic> json) => IncomingBid(
@@ -304,6 +330,8 @@ class IncomingBid {
         club: json['club'] as String? ?? '',
         fee: (json['fee'] as num?)?.toInt() ?? 0,
         matchday: (json['matchday'] as num?)?.toInt() ?? 0,
+        kind: json['kind'] as String? ?? 'permanent',
+        wageSharePercent: (json['wageSharePercent'] as num?)?.toInt() ?? 0,
       );
 }
 
@@ -337,19 +365,137 @@ class TransferNewsItem {
       );
 }
 
+/// One completed move, kept as the world's transfer ledger.
+///
+/// Only the user's club is saved, so every other squad is rebuilt from the CSV
+/// on load. Replaying this list on top of that rebuild is what stops a sold
+/// player reappearing at his old club, and what makes a hijack stick.
+class TransferMove {
+  const TransferMove({
+    required this.playerId,
+    required this.playerName,
+    required this.fromClub,
+    required this.toClub,
+    required this.kind,
+    required this.year,
+    required this.matchday,
+    this.fee = 0,
+    this.wage = 0,
+  });
+
+  final int playerId;
+  final String playerName;
+  final String fromClub;
+  final String toClub;
+
+  /// `permanent`, `free`, `loan` or `loanReturn`.
+  final String kind;
+  final int year;
+  final int matchday;
+  final int fee;
+  final int wage;
+
+  bool get isLoan => kind == 'loan' || kind == 'loanReturn';
+
+  Map<String, dynamic> toJson() => {
+        'playerId': playerId,
+        'playerName': playerName,
+        'fromClub': fromClub,
+        'toClub': toClub,
+        'kind': kind,
+        'year': year,
+        'matchday': matchday,
+        'fee': fee,
+        'wage': wage,
+      };
+
+  factory TransferMove.fromJson(Map<String, dynamic> json) => TransferMove(
+        playerId: (json['playerId'] as num?)?.toInt() ?? 0,
+        playerName: json['playerName'] as String? ?? 'Unknown',
+        fromClub: json['fromClub'] as String? ?? '',
+        toClub: json['toClub'] as String? ?? '',
+        kind: json['kind'] as String? ?? 'permanent',
+        year: (json['year'] as num?)?.toInt() ?? 0,
+        matchday: (json['matchday'] as num?)?.toInt() ?? 0,
+        fee: (json['fee'] as num?)?.toInt() ?? 0,
+        wage: (json['wage'] as num?)?.toInt() ?? 0,
+      );
+}
+
+/// An outgoing or incoming loan, tracked so the player can be returned.
+class LoanDeal {
+  const LoanDeal({
+    required this.playerId,
+    required this.playerName,
+    required this.fromClub,
+    required this.toClub,
+    required this.wageSharePercent,
+    required this.untilYear,
+    required this.matchday,
+    required this.wage,
+  });
+
+  final int playerId;
+  final String playerName;
+  final String fromClub;
+  final String toClub;
+
+  /// Share of the wage the borrowing club pays.
+  final int wageSharePercent;
+  final int untilYear;
+  final int matchday;
+
+  /// The player's full weekly wage, restored when the loan ends. The borrowing
+  /// club only carries its share while the loan runs.
+  final int wage;
+
+  Map<String, dynamic> toJson() => {
+        'playerId': playerId,
+        'playerName': playerName,
+        'fromClub': fromClub,
+        'toClub': toClub,
+        'wageSharePercent': wageSharePercent,
+        'untilYear': untilYear,
+        'matchday': matchday,
+        'wage': wage,
+      };
+
+  factory LoanDeal.fromJson(Map<String, dynamic> json) => LoanDeal(
+        playerId: (json['playerId'] as num?)?.toInt() ?? 0,
+        playerName: json['playerName'] as String? ?? 'Unknown',
+        fromClub: json['fromClub'] as String? ?? '',
+        toClub: json['toClub'] as String? ?? '',
+        wageSharePercent:
+            (json['wageSharePercent'] as num?)?.toInt() ?? 100,
+        untilYear: (json['untilYear'] as num?)?.toInt() ?? 0,
+        matchday: (json['matchday'] as num?)?.toInt() ?? 0,
+        wage: (json['wage'] as num?)?.toInt() ?? 0,
+      );
+}
+
 /// Everything the transfer desk owns, persisted inside the career blob.
 class TransferDesk {
   TransferDesk({
     List<TransferNegotiation>? negotiations,
     List<IncomingBid>? incomingBids,
     List<TransferNewsItem>? news,
+    List<TransferMove>? ledger,
+    List<LoanDeal>? loans,
   })  : negotiations = negotiations ?? [],
         incomingBids = incomingBids ?? [],
-        news = news ?? [];
+        news = news ?? [],
+        ledger = ledger ?? [],
+        loans = loans ?? [];
 
   final List<TransferNegotiation> negotiations;
   final List<IncomingBid> incomingBids;
   final List<TransferNewsItem> news;
+
+  /// Completed moves, oldest first. Replayed onto the rebuilt database.
+  final List<TransferMove> ledger;
+
+  /// Loans that are still running (either direction).
+  final List<LoanDeal> loans;
 
   /// Bumped by every mutation so the (expensive) market listing index can be
   /// cached without going stale after a signing or a rival move.
@@ -380,6 +526,13 @@ class TransferDesk {
     touch();
   }
 
+  /// Records a completed move. Capped so a long career's blob stays small.
+  void recordMove(TransferMove move) {
+    ledger.add(move);
+    if (ledger.length > 250) ledger.removeRange(0, ledger.length - 250);
+    touch();
+  }
+
   void touch() => revision++;
 
   Map<String, dynamic> toJson() => {
@@ -387,6 +540,8 @@ class TransferDesk {
         'negotiations': [for (final n in negotiations) n.toJson()],
         'incomingBids': [for (final b in incomingBids) b.toJson()],
         'news': [for (final item in news) item.toJson()],
+        'ledger': [for (final move in ledger) move.toJson()],
+        'loans': [for (final loan in loans) loan.toJson()],
       };
 
   factory TransferDesk.fromJson(Map<String, dynamic> json) {
@@ -404,6 +559,15 @@ class TransferDesk {
         for (final item in (json['news'] as List? ?? const []))
           if (item is Map)
             TransferNewsItem.fromJson(Map<String, dynamic>.from(item)),
+      ],
+      ledger: [
+        for (final move in (json['ledger'] as List? ?? const []))
+          if (move is Map)
+            TransferMove.fromJson(Map<String, dynamic>.from(move)),
+      ],
+      loans: [
+        for (final loan in (json['loans'] as List? ?? const []))
+          if (loan is Map) LoanDeal.fromJson(Map<String, dynamic>.from(loan)),
       ],
     );
   }

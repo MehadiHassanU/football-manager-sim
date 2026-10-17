@@ -4,6 +4,7 @@ import 'package:go_router/go_router.dart';
 
 import '../../core/models/player.dart';
 import '../../core/models/team.dart';
+import '../../core/services/cup_service.dart';
 import '../../providers/career_session_provider.dart';
 import '../../providers/data_providers.dart';
 import '../../ui/ui.dart';
@@ -98,6 +99,17 @@ class _NoCareerBody extends StatelessWidget {
   }
 }
 
+/// The fixture-card competition line on a cup week ('National Cup · '
+/// 'Quarter-finals'), or null on league matchdays so the league shows.
+String? _cupTag(CareerSession session) {
+  final season = session.season;
+  final cup = season.cup;
+  if (cup == null) return null;
+  final cupRound = CupService.cupRoundIndexOf(season, season.currentMatchday);
+  if (cupRound < 0) return null;
+  return '${cup.name} · ${CupService.roundNameOf(season, cupRound)}';
+}
+
 /// Hero: the next fixture, the form pills and the Play button in one card.
 class _NextMatchHero extends ConsumerWidget {
   const _NextMatchHero({
@@ -145,7 +157,10 @@ class _NextMatchHero extends ConsumerWidget {
                 children: [
                   Expanded(
                     child: Text(
-                      prettifyLeagueId(session.team.leagueId),
+                      // On a cup week the card's competition line names the
+                      // knockout tie rather than the league.
+                      _cupTag(session) ??
+                          prettifyLeagueId(session.team.leagueId),
                       style: theme.textTheme.labelSmall,
                       overflow: TextOverflow.ellipsis,
                     ),
@@ -782,8 +797,9 @@ class _PressureCard extends StatelessWidget {
                 const SizedBox(width: 6),
                 Expanded(
                   child: Text(
-                    'Wage bill ${_formatMoney(_wageBill(team.squad))} · '
-                    'revenue ${_formatMoney(team.revenue)}',
+                    'Wage bill ${_formatMoney(weeklyWageBill(team))}'
+                    '${team.wageBudget > 0 ? ' of ${_formatMoney(team.wageBudget)}' : ''}'
+                    ' · revenue ${_formatMoney(team.revenue)}',
                     style: Theme.of(context).textTheme.bodySmall,
                     overflow: TextOverflow.ellipsis,
                   ),
@@ -840,14 +856,6 @@ Team? _opponentTeam(CareerSession session, PlayerDatabase? db) {
       ?.opponentOf(session.team.id);
   if (fixtureId == null) return null;
   return db.teams.where((t) => t.id == fixtureId).firstOrNull;
-}
-
-double _wageBill(List<Player> squad) {
-  var total = 0.0;
-  for (final p in squad) {
-    total += p.weeklyWage;
-  }
-  return total;
 }
 
 /// Average squad OVR, or 0 for an empty squad (the CSV filter guarantees a

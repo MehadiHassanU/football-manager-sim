@@ -1,13 +1,12 @@
 import 'package:hive/hive.dart';
+import '../models/cup.dart';
 import '../models/fixture.dart';
 import '../models/season.dart';
 
-/// Schema v2.
-///
-/// Fields 0-6 are unchanged from v1 so older saves still read. Field 7 is the
-/// v1 flat "home|away" pair list, kept only so a v1 save can be detected and
-/// migrated. Fields 8 and 9 are the real schedule and the league records that
-/// replace it.
+/// Schema v2 fields remain 0-9. Field 10 is the knockout cup: nullable, so a
+/// v2 save reads back with no cup and gets one attached when its next season
+/// starts. Fixture rows themselves persist a `competition` tag inside the
+/// rounds list (field 8); older rows read back as league fixtures.
 class SeasonStateAdapter implements TypeAdapter<SeasonState> {
   @override
   final int typeId = 3;
@@ -45,6 +44,12 @@ class SeasonStateAdapter implements TypeAdapter<SeasonState> {
       });
     }
 
+    final cupRaw = fields[10];
+    CupState? cup;
+    if (cupRaw is Map) {
+      cup = CupState.fromJson(Map<String, dynamic>.from(cupRaw));
+    }
+
     return SeasonState(
       leagueId: fields[0] as String,
       currentMatchday: fields[1] as int,
@@ -56,6 +61,7 @@ class SeasonStateAdapter implements TypeAdapter<SeasonState> {
           records.isNotEmpty ? records : _recordsFromLegacyPoints(fields[6]),
       rounds: rounds,
       legacyFixturePairs: legacyPairs,
+      cup: cup,
     );
   }
 
@@ -72,7 +78,7 @@ class SeasonStateAdapter implements TypeAdapter<SeasonState> {
   @override
   void write(BinaryWriter writer, SeasonState obj) {
     writer
-      ..writeByte(10)
+      ..writeByte(11)
       ..writeByte(0)
       ..write(obj.leagueId)
       ..writeByte(1)
@@ -97,6 +103,8 @@ class SeasonStateAdapter implements TypeAdapter<SeasonState> {
       ..write({
         for (final entry in obj.records.entries)
           entry.key: entry.value.toJson(),
-      });
+      })
+      ..writeByte(10)
+      ..write(obj.cup?.toJson());
   }
 }

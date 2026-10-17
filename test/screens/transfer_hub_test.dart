@@ -39,6 +39,21 @@ void main() {
     }
     // Same repair the career start does, so wages and reputation are set.
     TransferMarketService().backfillTransferData(db.teams, 2026);
+    // One loan-available target, and deliberately the best player in the
+    // market so his row is the first one built (a ListView only builds what
+    // the viewport can see).
+    final loanTarget = db.players
+        .where((p) => p.currentTeam != db.teams.first.name)
+        .reduce((a, b) => a.ovr >= b.ovr ? a : b)
+      ..hiddenAttributes['transferListed'] = true;
+    final seller =
+        db.teams.firstWhere((t) => t.name == loanTarget.currentTeam);
+    seller.squad.add(stubPlayer(
+      id: 9500,
+      name: 'Cover',
+      team: seller.name,
+      ovr: 55,
+    ));
     final team = db.teams.first;
     team.transferBudget = 200000000;
     final session = CareerSession(
@@ -160,6 +175,33 @@ void main() {
 
     final negotiation = session.transferDesk.negotiations.single;
     expect(negotiation.counterOffer, negotiation.askingPrice);
+  });
+
+  testWidgets('a loan can be offered and signed from the market',
+      (tester) async {
+    final session = await pumpHub(tester);
+
+    await tester.tap(find.byIcon(Icons.swap_horiz).first);
+    await tester.pumpAndSettle();
+
+    expect(find.textContaining('Loan'), findsWidgets);
+    expect(find.textContaining('goes back at the end of it'), findsOneWidget);
+
+    await tester.tap(find.text('Make the offer'));
+    await tester.pumpAndSettle();
+
+    final borrowed = session.team.squad
+        .where((p) => p.hiddenAttributes['onLoanFrom'] != null)
+        .toList();
+    expect(borrowed, hasLength(1));
+    expect(session.transferDesk.loans, hasLength(1));
+    expect(session.transferDesk.news.any((n) => n.title.contains('on loan')),
+        isTrue);
+
+    // The hub's My Players tab now says where he came from.
+    await tester.tap(find.text('My Players'));
+    await tester.pumpAndSettle();
+    expect(find.textContaining('On loan from'), findsOneWidget);
   });
 
   testWidgets('My Players lists a squad player for offers', (tester) async {

@@ -345,6 +345,14 @@ class TransferMarketService {
     final finance = FinancialService();
     for (final team in teams) {
       if (team.squad.isEmpty) continue;
+      // The weekly wage ceiling comes from the bill the club already carries:
+      // a board sanctions what it has been paying plus a slice of headroom,
+      // not a number picked out of the air. Only set when it is missing, so a
+      // persisted budget survives a reload.
+      if (team.wageBudget <= 0) {
+        final bill = finance.calculateWageBill(team) + team.loanedOutWages;
+        team.wageBudget = bill > 0 ? (bill * 1.15).roundToDouble() : 0;
+      }
       if (team.reputation == 70) {
         final average = team.squad.fold<int>(0, (sum, p) => sum + p.ovr) /
             team.squad.length;
@@ -358,10 +366,80 @@ class TransferMarketService {
           player.transferValue =
               finance.calculateTransferValue(player, seasonYear: seasonYear);
         }
+        // 1-4 years left, never "already expired": adding 0 here made a
+        // quarter of the database a free agent on the first day of a career.
         player.contractExpiry ??=
-            DateTime(seasonYear + (player.id.abs() % 4), 6, 30);
+            DateTime(seasonYear + 1 + (player.id.abs() % 4), 6, 30);
       }
     }
+  }
+
+  /// Replays the world's completed moves onto a freshly parsed database.
+  ///
+  /// Only the user's club is saved; every other squad comes back from the CSV,
+  /// so without this a sold player would reappear at his old club, a hijack
+  /// would never have happened, and last season's loans would still be running.
+  ///
+  /// Idempotent: a move already applied changes nothing.
+  void applyTransferLedger({
+    required List<Player> players,
+    required List<Team> teams,
+    required List<TransferMove> moves,
+    required String userClub,
+  }) {
+    if (moves.isEmpty) return;
+    final byId = {for (final player in players) player.id: player};
+    final clubsByName = {for (final team in teams) team.name: team};
+
+    for (final move in moves) {
+      final player = byId[move.playerId];
+      if (player == null) continue;
+
+      // Step one: nobody still holds him. The user's own mirror squad is left
+      // alone because the saved squad is the authority for that club.
+      for (final team in teams) {
+        if (team.name == userClub) continue;
+        team.squad.removeWhere((p) => p.id == move.playerId);
+      }
+
+      player.currentTeam = move.toClub;
+      if (move.wage > 0) player.weeklyWage = move.wage.toDouble();
+
+      if (move.toClub == userClub) continue;
+      final buyer = clubsByName[move.toClub];
+      if (buyer == null) continue;
+      if (!buyer.squad.any((p) => p.id == move.playerId)) {
+        buyer.squad.add(player);
+      }
+    }
+  }
+
+  /// The weekly wage a wage-share share of [player] costs a borrowing club.
+  int loanCost(Player player, int wageSharePercent) =>
+      (player.weeklyWage * wageSharePercent / 100).round();
+
+  /// Whether a club would let a player leave on loan, and whether he is good
+  /// enough to be wanted. A squad player at a strong club is the classic loan
+  /// target; a first-teamer is not going anywhere.
+  bool loanAvailable(Player player, Team? owner) {
+    if (owner == null || owner.squad.length <= 16) return false;
+    if (player.hiddenAttributes['transferListed'] == true) return true;
+    if (player.requestedTransfer) return true;
+    final average =
+        owner.squad.fold<int>(0, (sum, p) => sum + p.ovr) / owner.squad.length;
+    return player.ovr <= average + 2 && player.age <= 23;
+  }
+
+  /// What a club expects as its share of the wage for loaning a player out.
+  /// Stronger clubs push more of the bill onto the borrower.
+  int loanWageShare(Player player, Team? owner) {
+    if (owner == null) return 50;
+    if (player.age <= 23 && player.ovr < 72) return 30;
+    if (player.requestedTransfer ||
+        player.hiddenAttributes['transferListed'] == true) {
+      return 40;
+    }
+    return 60;
   }
 
   static String money(num amount) {

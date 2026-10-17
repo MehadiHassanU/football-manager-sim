@@ -8,6 +8,7 @@ import 'package:football_manager_sim/core/models/player.dart';
 import 'package:football_manager_sim/core/models/season.dart';
 import 'package:football_manager_sim/core/models/team.dart';
 import 'package:football_manager_sim/core/models/tactics.dart';
+import 'package:football_manager_sim/core/models/transfer.dart';
 import 'package:football_manager_sim/core/models/youth_player.dart';
 import 'package:football_manager_sim/core/services/save_service.dart';
 
@@ -253,6 +254,61 @@ void main() {
         team.squad.map((p) => p.name).toList(),
       );
       expect(loaded.squad.first.primaryPosition, 'GK');
+    });
+
+    test('the wage ceiling and loaned-out wages survive Hive', () async {
+      final team = _teamWithSquad()
+        ..wageBudget = 425000
+        ..loanedOutWages = 12000;
+      await save.saveTeam(team);
+
+      final loaded = await save.loadTeam(team.id);
+      expect(loaded!.wageBudget, 425000,
+          reason: 'a restored save must keep the ceiling the board set');
+      expect(loaded.loanedOutWages, 12000);
+    });
+
+    test('the transfer desk round-trips through the career blob', () async {
+      final desk = TransferDesk()
+        ..recordMove(TransferMove(
+          playerId: 1,
+          playerName: 'Marquee Man',
+          fromClub: 'Club 1',
+          toClub: 'test_fc',
+          kind: 'permanent',
+          fee: 5000000,
+          wage: 40000,
+          year: 2026,
+          matchday: 2,
+        ))
+        ..loans.add(LoanDeal(
+          playerId: 2,
+          playerName: 'Loanee',
+          fromClub: 'Club 2',
+          toClub: 'test_fc',
+          wageSharePercent: 50,
+          untilYear: 2026,
+          matchday: 3,
+          wage: 20000,
+        ))
+        ..addNews(const TransferNewsItem(
+            type: 'signing', title: 'Signed', matchday: 2));
+
+      await save.saveJson('career_blob', {
+        'transferDesk': desk.toJson(),
+        'tactic': const Tactic().toJson(),
+      });
+      final blob = await save.loadJson('career_blob');
+      expect(blob, isNotNull);
+
+      final restored = TransferDesk.fromJson(
+        Map<String, dynamic>.from(blob!['transferDesk'] as Map),
+      );
+      expect(restored.ledger, hasLength(1));
+      expect(restored.ledger.single.toClub, 'test_fc');
+      expect(restored.ledger.single.fee, 5000000);
+      expect(restored.loans.single.wageSharePercent, 50);
+      expect(restored.news.single.title, 'Signed');
     });
 
     test('the career blob keeps nested lists and maps', () async {

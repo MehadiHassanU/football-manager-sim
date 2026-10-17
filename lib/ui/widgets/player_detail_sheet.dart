@@ -610,10 +610,64 @@ class _RoleTab extends ConsumerWidget {
                   'Transfer request',
                   player.requestedTransfer ? 'Submitted' : 'None',
                 ),
+                _textRow(
+                  context,
+                  'Unsettled',
+                  unsettledOf(player) ? 'Yes — wants minutes' : 'No',
+                ),
               ],
             ),
           ),
         ),
+        if (enabled && (unsettledOf(player) || player.requestedTransfer)) ...[
+          const SizedBox(height: 12),
+          Card(
+            color: theme.colorScheme.errorContainer.withValues(alpha: 0.35),
+            child: Padding(
+              padding: const EdgeInsets.all(14),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text('Squad mood', style: theme.textTheme.titleMedium),
+                  const SizedBox(height: 4),
+                  Text(
+                    player.requestedTransfer
+                        ? '${player.name} has handed in a transfer request. '
+                            'Clubs will come in for him, and the price is '
+                            'softer than it was.'
+                        : '${player.name} is unhappy with his playing time and '
+                            'is close to asking to leave.',
+                    style: theme.textTheme.bodySmall,
+                  ),
+                  if (player.hiddenAttributes['minutesPromise'] is int) ...[
+                    const SizedBox(height: 6),
+                    Text(
+                      'You have already promised him minutes. Break that '
+                      'promise and he will ask to leave.',
+                      style: theme.textTheme.labelSmall
+                          ?.copyWith(fontStyle: FontStyle.italic),
+                    ),
+                  ],
+                  const SizedBox(height: 10),
+                  FilledButton.tonal(
+                    onPressed: () {
+                      promisePlayingTime(ref, player);
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        SnackBar(
+                          content: Text(
+                            'You told ${player.name} he is in your plans. Back '
+                            'it up with minutes.',
+                          ),
+                        ),
+                      );
+                    },
+                    child: const Text('Promise him game time'),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ],
       ],
     );
   }

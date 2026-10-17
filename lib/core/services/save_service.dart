@@ -26,7 +26,12 @@ class SaveService {
   /// v2 replaced the flat, shuffled fixture list with real per-round fixtures
   /// and league records. v1 saves still load; `tryRestoreCareer` detects them
   /// by the absent schedule and regenerates it.
-  static const int schemaVersion = 2;
+  ///
+  /// v3 added the knockout cup: a nullable cup block on the season (field 10)
+  /// and a `competition` tag inside every persisted fixture. Both read back
+  /// with safe defaults on a v2 save — no cup, league fixtures — and that
+  /// career's next season attaches a cup at the rollover.
+  static const int schemaVersion = 3;
 
   /// Opens the Hive boxes, registers adapters, and validates the save version.
   ///
