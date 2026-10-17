@@ -12,8 +12,9 @@ class OvrBadge extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final color = AppTheme.ovrColor(ovr);
-    final isDarkBg = Theme.of(context).brightness == Brightness.dark;
+    final brightness = Theme.of(context).brightness;
+    final color = AppTheme.ovrColorFor(brightness, ovr);
+    final isDarkBg = brightness == Brightness.dark;
     return Container(
       width: size,
       height: size,

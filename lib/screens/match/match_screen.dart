@@ -18,7 +18,60 @@ import '../../providers/settings_providers.dart';
 import '../../ui/ui.dart';
 
 /// Real-time duration of the 90-minute ticker at normal speed.
-const int _tickerSeconds = 60;
+///
+/// A match is 90 displayed minutes; at 90 seconds one match minute lasts a
+/// second, which is slow enough to read the feed without the result arriving
+/// before the manager has watched it.
+const int _tickerSeconds = 90;
+
+/// Applies the Commentary and Commentary level settings to a simulated feed.
+///
+/// The two settings do different jobs: "Commentary off" removes the feed
+/// entirely, while "Key events only" keeps the moments that change the match
+/// (kick-off, goals, fouls, cards, injuries, substitutions, half-time) and
+/// drops chances, corners and running text.
+/// Filtering here rather than at the point of rendering means the ticker, the
+/// event counter and the list can never disagree about what was shown.
+List<MatchEvent> applyCommentarySettings(
+  List<MatchEvent> events, {
+  required bool enabled,
+  required String level,
+}) {
+  if (!enabled) return const [];
+  if (level == 'all') return events;
+  // Fouls belong here: they are the physical contest the manager is watching,
+  // and hiding them made the feed look frozen between goals. Kick-off and
+  // half-time stay too, so the feed never opens completely blank.
+  return events
+      .where((e) =>
+          e.isGoal ||
+          e.isCard ||
+          e.isInjury ||
+          e.isSubstitution ||
+          e.isFoul ||
+          e.isKickOff ||
+          e.isHalfTime)
+      .toList();
+}
+
+/// The score as it stood after the events up to [minute].
+///
+/// The simulator pre-computes the whole match, but the live screen must only
+/// show goals whose minute has already been reached. Reading the running score
+/// from the revealed events (rather than the final `result.homeGoals`) is what
+/// stops the full-time score appearing at kick-off.
+({int home, int away}) scoreAt(List<MatchEvent> events, int minute) {
+  var home = 0;
+  var away = 0;
+  for (final event in events) {
+    if (event.minute > minute) break;
+    if (event.isGoal) {
+      home = event.homeScore ?? home;
+      away = event.awayScore ?? away;
+    }
+  }
+  return (home: home, away: away);
+}
 
 class MatchScreen extends ConsumerStatefulWidget {
   const MatchScreen({super.key});
@@ -54,8 +107,8 @@ class _MatchScreenState extends ConsumerState<MatchScreen> {
 
   /// Seconds the ticker takes; adjusted by the match-speed setting.
   int get _durationSeconds => switch (ref.read(matchSpeedProvider)) {
-        'slow' => 90,
-        'fast' => 30,
+        'slow' => 180,
+        'fast' => 45,
         _ => _tickerSeconds,
       };
 
@@ -142,16 +195,19 @@ class _MatchScreenState extends ConsumerState<MatchScreen> {
           '(${result.events.length} events, ${result.homeGoals}-${result.awayGoals})');
 
       // Label the result with the real fixture names, in home/away order.
+      final commentaryOn = ref.read(commentaryEnabledProvider);
       final labeled = MatchResult(
         homeTeam: userIsHome ? session.team.name : opponent.name,
         awayTeam: userIsHome ? opponent.name : session.team.name,
         homeGoals: result.homeGoals,
         awayGoals: result.awayGoals,
+        // The full timeline is kept: the live score is derived from the goal
+        // events, and the commentary setting only filters the feed's display.
         events: result.events,
         playerRatings: result.playerRatings,
         homeMomentum: result.homeMomentum,
         awayMomentum: result.awayMomentum,
-        fullTimeCommentary: result.fullTimeCommentary,
+        fullTimeCommentary: commentaryOn ? result.fullTimeCommentary : '',
       );
 
       if (!mounted) return;
@@ -214,14 +270,47 @@ class _MatchScreenState extends ConsumerState<MatchScreen> {
         '[MATCH] Full time: ${_result!.homeTeam} ${_result!.resultText} ${_result!.awayTeam}');
 
     final session = ref.read(careerSessionProvider);
+    BoardVerdict? verdict;
     if (session != null) {
-      applyMatchResult(ref, _result!);
+      verdict = applyMatchResult(ref, _result!);
       ref.read(lastMatchResultProvider.notifier).state = _result;
       ref.read(currentMatchProvider.notifier).state = _result;
     }
     if (mounted) {
       setState(() => _phase = _MatchPhase.fullTime);
     }
+    if (verdict != null && verdict.sacked) {
+      unawaited(_announceSacking(verdict));
+    }
+  }
+
+  /// Ends the career the board has just revoked and returns to the main menu.
+  ///
+  /// Guarded on [context.mounted] because it runs after an await (the save is
+  /// erased), and the user can leave the screen while that is in flight.
+  Future<void> _announceSacking(BoardVerdict verdict) async {
+    await sackManager(ref);
+    if (!mounted) return;
+    ref.read(currentMatchProvider.notifier).state = null;
+    await showDialog<void>(
+      context: context,
+      barrierDismissible: false,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('You have been sacked'),
+        content: Text(
+          '${verdict.reason}\n\nThe career has ended and the save was '
+          'deleted. You can start a new one from the main menu.',
+        ),
+        actions: [
+          FilledButton(
+            onPressed: () => Navigator.pop(dialogContext),
+            child: const Text('Back to main menu'),
+          ),
+        ],
+      ),
+    );
+    if (!mounted) return;
+    context.go('/main-menu');
   }
 
   void _skipToEnd() {
@@ -235,6 +324,7 @@ class _MatchScreenState extends ConsumerState<MatchScreen> {
     final session = ref.read(careerSessionProvider);
     if (session != null) {
       session.tactic = tactic;
+      notifySessionChanged(ref);
     }
     Navigator.of(context).pop();
     ScaffoldMessenger.of(context).showSnackBar(
@@ -263,21 +353,37 @@ class _MatchScreenState extends ConsumerState<MatchScreen> {
           enabled: _hasSquad(),
           starting: _phase == _MatchPhase.starting,
         ),
-      _MatchPhase.live || _MatchPhase.halfTime => _LiveMatch(
-          result: _result!,
-          minute: _currentMinute,
-          events: _result!.events.take(_eventsShown).toList(),
-          homeMomentum: _momentumAt(_result!.homeMomentum, _currentMinute),
-          awayMomentum: _momentumAt(_result!.awayMomentum, _currentMinute),
-          onHalfTime: _openHalfTime,
-          onSkip: _skipToEnd,
-        ),
+      _MatchPhase.live || _MatchPhase.halfTime => _liveMatch(),
       _MatchPhase.fullTime => _FullTime(result: _result!),
       _MatchPhase.error => _MatchError(
           message: _errorMessage ?? 'Something went wrong.',
           onRetry: _startMatch,
         ),
     };
+  }
+
+  /// The live view: only the events whose minute has arrived, and the score
+  /// those events have produced so far.
+  Widget _liveMatch() {
+    final result = _result!;
+    final shown = result.events.take(_eventsShown).toList();
+    final score = scoreAt(shown, _currentMinute);
+    final feed = applyCommentarySettings(
+      shown,
+      enabled: ref.read(commentaryEnabledProvider),
+      level: ref.read(commentaryLevelProvider),
+    );
+    return LiveMatch(
+      result: result,
+      homeGoals: score.home,
+      awayGoals: score.away,
+      minute: _currentMinute,
+      events: feed,
+      homeMomentum: _momentumAt(result.homeMomentum, _currentMinute),
+      awayMomentum: _momentumAt(result.awayMomentum, _currentMinute),
+      onHalfTime: _openHalfTime,
+      onSkip: _skipToEnd,
+    );
   }
 
   bool _hasSquad() {
@@ -324,6 +430,11 @@ class _PreMatch extends ConsumerWidget {
     final theme = Theme.of(context);
     final db = ref.watch(playerDatabaseProvider).valueOrNull;
     final opponent = db == null ? null : _pickOpponent(session, db);
+    final duration = switch (ref.read(matchSpeedProvider)) {
+      'slow' => 'three minutes',
+      'fast' => '45 seconds',
+      _ => '90 seconds',
+    };
 
     return Scaffold(
       appBar: AppBar(title: const Text('Match')),
@@ -342,7 +453,7 @@ class _PreMatch extends ConsumerWidget {
               style: theme.textTheme.bodyMedium,
             ),
             const SizedBox(height: 4),
-            Text('The match plays out in about a minute.',
+            Text('The match plays out in about $duration.',
                 style: theme.textTheme.bodySmall),
             const SizedBox(height: 24),
             if (starting) ...[
@@ -383,9 +494,12 @@ class _MatchError extends StatelessWidget {
   }
 }
 
-class _LiveMatch extends StatelessWidget {
-  const _LiveMatch({
+class LiveMatch extends StatelessWidget {
+  const LiveMatch({
+    super.key,
     required this.result,
+    required this.homeGoals,
+    required this.awayGoals,
     required this.minute,
     required this.events,
     required this.homeMomentum,
@@ -395,6 +509,11 @@ class _LiveMatch extends StatelessWidget {
   });
 
   final MatchResult result;
+
+  /// The score at [minute] — not the final score, which is what used to be
+  /// printed from kick-off.
+  final int homeGoals;
+  final int awayGoals;
   final int minute;
   final List<MatchEvent> events;
   final List<double> homeMomentum;
@@ -437,9 +556,8 @@ class _LiveMatch extends StatelessWidget {
                     child: AnimatedSwitcher(
                       duration: const Duration(milliseconds: 300),
                       child: Text(
-                        '${result.homeGoals} - ${result.awayGoals}',
-                        key:
-                            ValueKey('${result.homeGoals}-${result.awayGoals}'),
+                        '$homeGoals - $awayGoals',
+                        key: ValueKey('$homeGoals-$awayGoals'),
                         style: theme.textTheme.displaySmall
                             ?.copyWith(fontSize: 36),
                       ),
@@ -601,7 +719,12 @@ class _EventTile extends StatelessWidget {
       'goal' => (Icons.sports_soccer, const Color(0xFF00C853)),
       'card' => (Icons.style, const Color(0xFFFFB74D)),
       'injury' => (Icons.healing, const Color(0xFFEF5350)),
-      'chance' => (Icons.bolt, const Color(0xFF40C4FF)),
+      'chance' || 'save' => (Icons.bolt, const Color(0xFF40C4FF)),
+      'foul' => (Icons.pan_tool_alt_outlined, const Color(0xFFFF8A65)),
+      'corner' => (Icons.flag_outlined, const Color(0xFF9CCC65)),
+      'offside' => (Icons.outlined_flag, const Color(0xFFB0BEC5)),
+      'sub' => (Icons.swap_horiz, const Color(0xFF80DEEA)),
+      'kickoff' || 'halfTime' => (Icons.timer_outlined, AppTheme.pitchGreen),
       _ => (
           Icons.chat_bubble_outline,
           theme.colorScheme.onSurface.withValues(alpha: 0.3)
@@ -621,11 +744,7 @@ class _EventTile extends StatelessWidget {
           const SizedBox(width: 10),
           Expanded(
             child: Text(
-              event.isGoal
-                  ? 'GOAL! ${event.player}'
-                  : (event.description.isEmpty
-                      ? event.type
-                      : event.description),
+              event.description.isEmpty ? event.type : event.description,
               style: theme.textTheme.bodyMedium?.copyWith(
                 fontWeight: event.isGoal ? FontWeight.w700 : FontWeight.w400,
               ),

@@ -20,10 +20,17 @@ class HomeShell extends StatelessWidget {
   ];
 
   int _indexFor(String location) {
-    final index =
-        _destinations.indexWhere((d) => location.startsWith(d.$1));
+    final index = _destinations.indexWhere((d) => location.startsWith(d.$1));
     return index < 0 ? 0 : index;
   }
+
+  /// Whether [location] is one of the four tab roots, as opposed to a
+  /// drill-down such as `/league-table` or `/main-menu`.
+  ///
+  /// Tab roots own the back gesture (walk one tab back); drill-downs must be
+  /// allowed to pop normally, otherwise back would do nothing at all on them.
+  static bool _isTabRoot(String location) =>
+      _destinations.any((d) => d.$1 == location) || location == '/main-menu';
 
   @override
   Widget build(BuildContext context) {
@@ -33,18 +40,17 @@ class HomeShell extends StatelessWidget {
 
     // Android back gesture: on a non-Home tab, navigate one tab back instead
     // of exiting the game; on Home the event is swallowed (standard game
-    // behavior — exit via the system home gesture or recent apps).
+    // behavior — exit via the system home gesture or recent apps). Drill-down
+    // routes inside the shell pop normally so back always goes somewhere.
     return PopScope<Object?>(
-      canPop: false,
+      canPop: !_isTabRoot(location),
       onPopInvokedWithResult: (didPop, _) {
         if (didPop) return;
         if (index > 0) {
           context.go(_tabOrder[index - 1]);
         }
       },
-      child: wide
-          ? _buildWide(context, index)
-          : _buildNarrow(context, index),
+      child: wide ? _buildWide(context, index) : _buildNarrow(context, index),
     );
   }
 

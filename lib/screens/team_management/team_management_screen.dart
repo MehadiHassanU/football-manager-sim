@@ -8,6 +8,7 @@ import '../../core/models/tactics.dart';
 import '../../core/models/youth_player.dart';
 import '../../providers/career_session_provider.dart';
 import '../../ui/ui.dart';
+import '../transfer_market/transfer_market_screen.dart';
 
 class TeamManagementScreen extends ConsumerStatefulWidget {
   const TeamManagementScreen({super.key});
@@ -181,27 +182,10 @@ class _TeamManagementScreenState extends ConsumerState<TeamManagementScreen> {
   }
 
   Widget _transfersTab(BuildContext context) {
-    return Center(
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          const Icon(Icons.swap_horiz, size: 48, color: Colors.white24),
-          const SizedBox(height: 12),
-          const Text('Transfer Hub'),
-          const SizedBox(height: 6),
-          Text(
-            'Market, shortlist, bids and your own squad.',
-            style: Theme.of(context).textTheme.bodySmall,
-          ),
-          const SizedBox(height: 16),
-          PrimaryButton(
-            label: 'Open Transfer Hub',
-            icon: Icons.storefront_outlined,
-            onPressed: () => context.go('/transfers'),
-          ),
-        ],
-      ),
-    );
+    // The market is the destination: opening this tab shows the live market
+    // instead of an empty state whose only job was to link to another screen
+    // that shows exactly the same list.
+    return const TransferMarketBody();
   }
 
   Widget _youthTab(BuildContext context, CareerSession session) {
@@ -261,9 +245,17 @@ class _TeamManagementScreenState extends ConsumerState<TeamManagementScreen> {
 
   void _runIntake(BuildContext context) {
     addYouthProspect(ref, count: 3);
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('Scouting reports: 3 new prospects')),
-    );
+    // The academy list repaints immediately, so this is only a confirmation.
+    // Hiding the current one first stops repeated taps queueing a toast per
+    // tap, which previously trailed the manager across every screen.
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(
+        const SnackBar(
+          duration: Duration(seconds: 2),
+          content: Text('3 new prospects joined the academy'),
+        ),
+      );
   }
 
   Future<void> _promote(BuildContext context, YouthPlayer prospect) async {
@@ -351,8 +343,9 @@ class _TacticsTabState extends ConsumerState<_TacticsTab> {
   void _apply(Tactic next) {
     final session = ref.read(careerSessionProvider)!;
     session.tactic = next;
-    // Re-assign so Riverpod listeners (and the save) see the new object.
-    ref.read(careerSessionProvider.notifier).state = session;
+    // Re-emit a shallow copy: StateProvider only notifies listeners when the
+    // value is a different instance, so assigning `session` was a no-op.
+    notifySessionChanged(ref);
     setState(() {});
   }
 
@@ -389,6 +382,7 @@ class _TacticsTabState extends ConsumerState<_TacticsTab> {
             child: PitchPreview(
               squad: session.team.squad,
               formation: tactic.formation,
+              height: _pitchHeight(context),
             ),
           ),
           const TabBar(
@@ -540,6 +534,11 @@ class _TacticsTabState extends ConsumerState<_TacticsTab> {
     );
   }
 
+  /// The pitch grows with the screen but stays short enough on a 640 dp phone
+  /// that the instruction tabs underneath still get usable height.
+  double _pitchHeight(BuildContext context) =>
+      (MediaQuery.sizeOf(context).height * 0.40).clamp(260.0, 340.0);
+
   Widget _category({required List<Widget> children}) => ListView(
         padding: const EdgeInsets.fromLTRB(16, 12, 16, 16),
         children: children,
@@ -598,14 +597,21 @@ class _TacticsTabState extends ConsumerState<_TacticsTab> {
 
 /// Pitch diagram showing the eleven [formation] actually selects.
 ///
-/// Laid out with a [LayoutBuilder] so the markers track the real box width
-/// instead of a hard-coded 220 px that pushed tokens off-screen on a phone.
+/// The previous layout positioned a 2.2-marker-wide token with
+/// `x * width - marker / 2`, which put every marker's centre roughly 18 dp to
+/// the right of its slot, and clamped the goalkeeper (y = 0.93) against the
+/// bottom edge so he sat on the goal line with his name clipped.
+///
+/// This version maps the marker *centres* into an inset rectangle: half a
+/// token is reserved either side and the marker plus the name block top and
+/// bottom, so `x = 0.5` is exactly the middle of the pitch and every token —
+/// keeper included — stays fully inside the field.
 class PitchPreview extends StatelessWidget {
   const PitchPreview({
     super.key,
     required this.squad,
     required this.formation,
-    this.height = 240,
+    this.height = 300,
   });
 
   final List<Player> squad;
@@ -615,21 +621,38 @@ class PitchPreview extends StatelessWidget {
   /// aspect-driven box was ~420 dp tall and pushed the tabs off-screen.
   final double height;
 
+  /// Width of the marker + name column.
+  static const double _tokenWidth = 70;
+
+  /// Diameter of the shirt-number circle.
+  static const double _marker = 34;
+
+  /// Vertical space the player's name occupies under the circle.
+  static const double _labelHeight = 16;
+
   @override
   Widget build(BuildContext context) {
     final layout = kFormationLayouts[formation] ?? const <PitchPosition>[];
     final slots = formationPreview(squad, formation);
 
     return ClipRRect(
-      borderRadius: BorderRadius.circular(16),
+      borderRadius: BorderRadius.circular(18),
       child: SizedBox(
         height: height,
         child: LayoutBuilder(
           builder: (context, constraints) {
             final width = constraints.maxWidth;
-            const marker = 30.0;
+            final pitchHeight = constraints.maxHeight;
+            const insetX = 6.0;
+            final minX = _tokenWidth / 2 + insetX;
+            final maxX = width - _tokenWidth / 2 - insetX;
+            final minY = _marker / 2 + 6;
+            final maxY = pitchHeight - _marker / 2 - _labelHeight - 8;
+            final spanX = (maxX - minX).clamp(1.0, double.infinity);
+            final spanY = (maxY - minY).clamp(1.0, double.infinity);
+
             return ColoredBox(
-              color: const Color(0xFF1B5E20),
+              color: const Color(0xFF155E27),
               child: Stack(
                 children: [
                   Positioned.fill(
@@ -637,14 +660,13 @@ class PitchPreview extends StatelessWidget {
                   ),
                   for (var i = 0; i < layout.length; i++)
                     Positioned(
-                      left: (layout[i].x * width - marker / 2)
-                          .clamp(0.0, width - marker),
-                      top: (layout[i].y * constraints.maxHeight - marker * 1.1)
-                          .clamp(0.0, constraints.maxHeight - marker * 2.1),
+                      left: minX + layout[i].x * spanX - _tokenWidth / 2,
+                      top: minY + layout[i].y * spanY - _marker / 2,
+                      width: _tokenWidth,
                       child: _PitchToken(
                         slot: slots[i],
                         layout: layout[i],
-                        size: marker,
+                        size: _marker,
                       ),
                     ),
                 ],
@@ -672,41 +694,53 @@ class _PitchToken extends StatelessWidget {
   Widget build(BuildContext context) {
     final player = slot.player;
     final empty = player == null;
-    return SizedBox(
-      width: size * 2.2,
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Container(
-            width: size,
-            height: size,
-            decoration: BoxDecoration(
-              color: Colors.black.withValues(alpha: empty ? 0.3 : 0.6),
-              shape: BoxShape.circle,
-              border: Border.all(
-                color: empty ? Colors.white38 : Colors.white70,
-              ),
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Container(
+          width: size,
+          height: size,
+          decoration: BoxDecoration(
+            color: Colors.black.withValues(alpha: empty ? 0.28 : 0.62),
+            shape: BoxShape.circle,
+            border: Border.all(
+              color: empty ? Colors.white38 : Colors.white70,
+              width: 1.4,
             ),
-            alignment: Alignment.center,
-            child: Text(
-              empty ? layout.position : '${player.ovr}',
-              style: const TextStyle(
-                color: Colors.white,
-                fontSize: 11,
-                fontWeight: FontWeight.w700,
-              ),
+            boxShadow: empty
+                ? null
+                : [
+                    BoxShadow(
+                      color: Colors.black.withValues(alpha: 0.35),
+                      blurRadius: 6,
+                      offset: const Offset(0, 2),
+                    ),
+                  ],
+          ),
+          alignment: Alignment.center,
+          child: Text(
+            empty ? layout.position : '${player.ovr}',
+            style: TextStyle(
+              color: Colors.white,
+              fontSize: empty ? 8.5 : 12.5,
+              fontWeight: FontWeight.w700,
             ),
           ),
-          const SizedBox(height: 2),
-          Text(
-            empty ? '—' : _shortName(player.name),
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-            textAlign: TextAlign.center,
-            style: const TextStyle(color: Colors.white, fontSize: 9),
+        ),
+        const SizedBox(height: 2),
+        Text(
+          empty ? '—' : _shortName(player.name),
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+          softWrap: false,
+          textAlign: TextAlign.center,
+          style: const TextStyle(
+            color: Colors.white,
+            fontSize: 10,
+            fontWeight: FontWeight.w500,
           ),
-        ],
-      ),
+        ),
+      ],
     );
   }
 
@@ -716,23 +750,81 @@ class _PitchToken extends StatelessWidget {
   }
 }
 
+/// Regulation pitch markings drawn relative to the box, so the diagram reads
+/// as a football pitch at any size.
 class _PitchLines extends CustomPainter {
   @override
   void paint(Canvas canvas, Size size) {
-    final paint = Paint()
-      ..color = Colors.white.withValues(alpha: 0.3)
+    // Mown stripes.
+    final stripe = Paint()..color = Colors.white.withValues(alpha: 0.035);
+    const stripeCount = 8;
+    final stripeHeight = size.height / stripeCount;
+    for (var i = 0; i < stripeCount; i += 2) {
+      canvas.drawRect(
+        Rect.fromLTWH(0, i * stripeHeight, size.width, stripeHeight),
+        stripe,
+      );
+    }
+
+    final line = Paint()
+      ..color = Colors.white.withValues(alpha: 0.34)
       ..style = PaintingStyle.stroke
-      ..strokeWidth = 1.5;
-    canvas.drawRect(
-      Rect.fromLTWH(8, 8, size.width - 16, size.height - 16),
-      paint,
+      ..strokeWidth = 1.4;
+    final solid = Paint()..color = Colors.white.withValues(alpha: 0.55);
+
+    const pad = 10.0;
+    final field = Rect.fromLTWH(
+      pad,
+      pad,
+      size.width - pad * 2,
+      size.height - pad * 2,
     );
-    canvas.drawLine(
-      Offset(8, size.height / 2),
-      Offset(size.width - 8, size.height / 2),
-      paint,
-    );
-    canvas.drawCircle(Offset(size.width / 2, size.height / 2), 36, paint);
+    canvas.drawRect(field, line);
+
+    final midY = field.center.dy;
+    canvas.drawLine(Offset(field.left, midY), Offset(field.right, midY), line);
+
+    final circleRadius = (size.width * 0.13).clamp(26.0, 44.0);
+    canvas.drawCircle(field.center, circleRadius, line);
+    canvas.drawCircle(field.center, 2.0, solid);
+
+    // Penalty areas, six-yard boxes, spots and arcs at both ends.
+    final boxWidth = field.width * 0.58;
+    final boxHeight = field.height * 0.15;
+    final sixWidth = field.width * 0.30;
+    final sixHeight = field.height * 0.055;
+    for (final isTop in const [true, false]) {
+      final edge = isTop ? field.top : field.bottom;
+      final direction = isTop ? 1.0 : -1.0;
+      final box = Rect.fromLTWH(
+        field.center.dx - boxWidth / 2,
+        isTop ? edge : edge - boxHeight,
+        boxWidth,
+        boxHeight,
+      );
+      canvas.drawRect(box, line);
+      canvas.drawRect(
+        Rect.fromLTWH(
+          field.center.dx - sixWidth / 2,
+          isTop ? edge : edge - sixHeight,
+          sixWidth,
+          sixHeight,
+        ),
+        line,
+      );
+      final spot = Offset(field.center.dx, edge + direction * boxHeight * 0.72);
+      canvas.drawCircle(spot, 2.0, solid);
+
+      // The arc bulges out of the box, so it is clipped to the area beyond it.
+      canvas.save();
+      canvas.clipRect(
+        isTop
+            ? Rect.fromLTRB(field.left, box.bottom, field.right, field.bottom)
+            : Rect.fromLTRB(field.left, field.top, field.right, box.top),
+      );
+      canvas.drawCircle(spot, circleRadius * 0.92, line);
+      canvas.restore();
+    }
   }
 
   @override
@@ -783,8 +875,8 @@ class _PlayerCard extends StatelessWidget {
                   minHeight: 4,
                   backgroundColor:
                       theme.colorScheme.onSurface.withValues(alpha: 0.08),
-                  valueColor:
-                      AlwaysStoppedAnimation(AppTheme.ovrColor(player.fitness)),
+                  valueColor: AlwaysStoppedAnimation(
+                      AppTheme.ovrColorFor(theme.brightness, player.fitness)),
                 ),
               ),
             ),

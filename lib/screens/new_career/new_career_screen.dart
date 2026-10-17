@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart' show MaxLengthEnforcement;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
@@ -48,7 +49,7 @@ class _NewCareerScreenState extends ConsumerState<NewCareerScreen> {
         leading: IconButton(
           icon: const Icon(Icons.arrow_back),
           tooltip: 'Back to Main Menu',
-          onPressed: () => context.go('/main-menu'),
+          onPressed: () => context.push('/main-menu'),
         ),
       ),
       body: dbAsync.when(
@@ -76,10 +77,9 @@ class _NewCareerScreenState extends ConsumerState<NewCareerScreen> {
   /// separate scroll gestures. Sections stay in the same order so the flow
   /// reads top-to-bottom.
   Widget _form(PlayerDatabase db) {
-    final nationalities = _worldNationalities(db);
-    if (!nationalities.contains(_nationality)) {
-      _nationality = nationalities.first;
-    }
+    // Read from the provider rather than rebuilding the set inline: this walk
+    // covers every player in the CSV and used to rerun on each keystroke.
+    final nationalities = ref.watch(nationalitiesProvider);
     final leagues = _filteredLeagues(db);
     final clubs = _filteredClubs(db);
 
@@ -103,7 +103,7 @@ class _NewCareerScreenState extends ConsumerState<NewCareerScreen> {
             padding: const EdgeInsets.symmetric(horizontal: 16),
             child: TextField(
               controller: _leagueSearch,
-              onChanged: (_) => setState(() {}),
+              onChanged: (_) => setState(() => _leaguesExpanded = false),
               decoration: const InputDecoration(
                 hintText: 'Search leagues or countries',
                 prefixIcon: Icon(Icons.search),
@@ -136,16 +136,6 @@ class _NewCareerScreenState extends ConsumerState<NewCareerScreen> {
               return _leagueTile(league);
             },
           ),
-          if (!_leaguesExpanded && leagues.length > _collapsedRowCount)
-            SliverToBoxAdapter(
-              child: Padding(
-                padding: const EdgeInsets.fromLTRB(16, 0, 16, 4),
-                child: Text(
-                  '${leagues.length - _collapsedRowCount} more — search or expand above.',
-                  style: Theme.of(context).textTheme.bodySmall,
-                ),
-              ),
-            ),
         ],
         SliverToBoxAdapter(
           child: SectionHeader(
@@ -157,7 +147,7 @@ class _NewCareerScreenState extends ConsumerState<NewCareerScreen> {
             padding: const EdgeInsets.symmetric(horizontal: 16),
             child: TextField(
               controller: _clubSearch,
-              onChanged: (_) => setState(() {}),
+              onChanged: (_) => setState(() => _clubsExpanded = false),
               decoration: const InputDecoration(
                 hintText: 'Search clubs',
                 prefixIcon: Icon(Icons.search),
@@ -206,6 +196,10 @@ class _NewCareerScreenState extends ConsumerState<NewCareerScreen> {
         TextField(
           controller: _nameController,
           textCapitalization: TextCapitalization.words,
+          // The name is rendered into the AppBar and persisted, so cap it here
+          // rather than letting an unbounded string reach the save file.
+          maxLength: 24,
+          maxLengthEnforcement: MaxLengthEnforcement.enforced,
           decoration: const InputDecoration(
             labelText: 'Name',
             prefixIcon: Icon(Icons.person_outline),
@@ -214,7 +208,7 @@ class _NewCareerScreenState extends ConsumerState<NewCareerScreen> {
         ),
         const SizedBox(height: 10),
         DropdownButtonFormField<String>(
-          initialValue: _nationality,
+          initialValue: _effectiveNationality,
           isExpanded: true,
           decoration: const InputDecoration(
             labelText: 'Nationality',
@@ -320,6 +314,18 @@ class _NewCareerScreenState extends ConsumerState<NewCareerScreen> {
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
+          if (ready)
+            // Pre-commit summary: budget and squad strength are the two things
+            // a manager actually chooses a club by, and neither was visible.
+            Padding(
+              padding: const EdgeInsets.only(bottom: 8),
+              child: Text(
+                '${_team!.squad.length} players · avg ${_avgOvr(_team!)} OVR · '
+                '${_formatMoney(_team!.budget)}',
+                style: Theme.of(context).textTheme.bodySmall,
+                textAlign: TextAlign.center,
+              ),
+            ),
           if (!ready)
             Padding(
               padding: const EdgeInsets.only(bottom: 6),
@@ -371,33 +377,71 @@ class _NewCareerScreenState extends ConsumerState<NewCareerScreen> {
         .toList();
   }
 
-  /// Every nationality present in the loaded dataset, alphabetically.
+  /// The nationality actually applied to the manager.
   ///
-  /// Deriving this from the world data means the manager can be from any of
-  /// the ~100 nations the CSV actually covers instead of a hardcoded list of
-  /// ten, and it can never offer a country with no players.
-  List<String> _worldNationalities(PlayerDatabase db) {
-    final seen = <String>{};
-    for (final p in db.players) {
-      final n = p.nationality.trim();
-      if (n.isNotEmpty) seen.add(n);
-    }
-    final sorted = seen.toList()..sort();
-    return sorted.isEmpty ? const ['Unknown'] : sorted;
+  /// Falls back to the first available nation when the chosen one is not in the
+  /// dataset. This used to assign the field directly from `build`, which wrote
+  /// widget state during a build pass.
+  String get _effectiveNationality {
+    final available = ref.read(nationalitiesProvider);
+    if (available.contains(_nationality)) return _nationality;
+    return available.first;
   }
 
-  void _startCareer() {
+  /// Average squad OVR, used by the pre-commit summary.
+  int _avgOvr(Team team) {
+    if (team.squad.isEmpty) return 0;
+    final total = team.squad.fold<int>(0, (sum, p) => sum + p.ovr);
+    return (total / team.squad.length).round();
+  }
+
+  /// Starts the career, first confirming that an existing save is discarded.
+  ///
+  /// [startNewCareer] writes over the same Hive keys the current save uses, so
+  /// without this a tap here silently destroyed the previous career.
+  Future<void> _startCareer() async {
     final team = _team;
     if (team == null) return;
+
+    if (ref.read(hasSaveProvider).valueOrNull ?? false) {
+      final confirmed = await _confirmReplaceCareer(team);
+      if (confirmed != true || !mounted) return;
+    }
+
     final name = _nameController.text.trim();
     final manager = Manager(
       name: name.isEmpty ? 'The Manager' : name,
       age: _age,
-      nationality: _nationality,
+      nationality: _effectiveNationality,
       teamId: team.id,
     );
     startNewCareer(ref, manager: manager, team: team);
+    if (!mounted) return;
     context.go('/home');
+  }
+
+  /// Warns that the existing career and its save will be replaced.
+  Future<bool?> _confirmReplaceCareer(Team team) {
+    return showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Replace your current career?'),
+        content: Text(
+          'A saved career already exists. Starting at ${team.name} overwrites '
+          'it permanently.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, false),
+            child: const Text('Keep current'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(dialogContext, true),
+            child: const Text('Replace'),
+          ),
+        ],
+      ),
+    );
   }
 }
 

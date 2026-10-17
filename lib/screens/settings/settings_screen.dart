@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
@@ -24,19 +26,51 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
     final difficulty = ref.watch(difficultyProvider);
     final isSacking = ref.watch(isSackingEnabledProvider);
     final commentary = ref.watch(commentaryEnabledProvider);
-    final commentaryAudio = ref.watch(commentaryAudioEnabledProvider);
-    final crowdNoise = ref.watch(crowdNoiseEnabledProvider);
     final matchSpeed = ref.watch(matchSpeedProvider);
     final commentaryLevel = ref.watch(commentaryLevelProvider);
     final sackablePercent = ref.watch(sackablePercentProvider);
+    final themeMode = ref.watch(themeModeProvider);
 
-    Future<void> changed() => saveAllSettings(ref);
+    // Discrete controls persist immediately; sliders debounce through
+    // [scheduleSettingsSave], because a drag emits a change per frame.
+    void changed() => saveSettingsNow(ref);
 
     return Scaffold(
       appBar: AppBar(title: const Text('Settings')),
       body: ListView(
         padding: const EdgeInsets.all(16),
         children: [
+          const SectionHeader(title: 'Appearance'),
+          Card(
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text('Theme'),
+                  Text('Follow the system, or pick one',
+                      style: Theme.of(context).textTheme.bodySmall),
+                  const SizedBox(height: 10),
+                  SizedBox(
+                    width: double.infinity,
+                    child: SegmentedButton<String>(
+                      segments: const [
+                        ButtonSegment(value: 'system', label: Text('System')),
+                        ButtonSegment(value: 'light', label: Text('Light')),
+                        ButtonSegment(value: 'dark', label: Text('Dark')),
+                      ],
+                      selected: {themeMode},
+                      onSelectionChanged: (selection) {
+                        ref.read(themeModeProvider.notifier).state =
+                            selection.first;
+                        changed();
+                      },
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
           const SectionHeader(title: 'Gameplay'),
           Card(
             child: Column(
@@ -50,7 +84,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       const Text('Difficulty'),
-                      Text('How tough the AI opposition plays',
+                      Text('Scales every rival club except yours',
                           style: Theme.of(context).textTheme.bodySmall),
                       const SizedBox(height: 10),
                       SizedBox(
@@ -75,7 +109,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                 ),
                 SwitchListTile(
                   title: const Text('Manager sacking'),
-                  subtitle: const Text('Board can sack you'),
+                  subtitle: const Text('The board can sack you at 100% risk'),
                   value: isSacking,
                   onChanged: (v) {
                     ref.read(isSackingEnabledProvider.notifier).state = v;
@@ -92,14 +126,20 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                     label: '${sackablePercent.round()}%',
                     onChanged: (v) {
                       ref.read(sackablePercentProvider.notifier).state = v;
-                      changed();
+                      // Move the Home gauge with the slider, but do not write
+                      // the career save on every frame of the drag.
+                      syncSackRiskToManager(ref);
+                      setState(() {});
+                      scheduleSettingsSave(ref);
                     },
+                    onChangeEnd: (_) => unawaited(saveCareerNow(ref)),
                   ),
                   trailing: Text('${sackablePercent.round()}%'),
                 ),
                 SwitchListTile(
                   title: const Text('FFP enforcement'),
-                  subtitle: const Text('Financial Fair Play rules'),
+                  subtitle: const Text(
+                      'Blocks signings that breach the wage-ratio limit'),
                   value: ffpEnabled,
                   onChanged: (v) {
                     ref.read(ffpEnabledProvider.notifier).state = v;
@@ -151,7 +191,8 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                       Text(
                           commentaryLevel == 'all'
                               ? 'Every event'
-                              : 'Key events only',
+                              : 'Key events only (goals, fouls, cards, '
+                                  'injuries, substitutions)',
                           style: Theme.of(context).textTheme.bodySmall),
                       const SizedBox(height: 10),
                       SizedBox(
@@ -176,33 +217,29 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
               ],
             ),
           ),
-          const SectionHeader(title: 'Audio'),
+          const SectionHeader(title: 'Commentary & audio'),
           Card(
             child: Column(
               children: [
                 SwitchListTile(
-                  title: const Text('Commentary'),
+                  title: const Text('Text commentary'),
+                  subtitle: const Text('Show the live match feed during play'),
                   value: commentary,
                   onChanged: (v) {
                     ref.read(commentaryEnabledProvider.notifier).state = v;
                     changed();
                   },
                 ),
-                SwitchListTile(
-                  title: const Text('Commentary audio'),
-                  value: commentaryAudio,
-                  onChanged: (v) {
-                    ref.read(commentaryAudioEnabledProvider.notifier).state = v;
-                    changed();
-                  },
-                ),
-                SwitchListTile(
-                  title: const Text('Crowd noise'),
-                  value: crowdNoise,
-                  onChanged: (v) {
-                    ref.read(crowdNoiseEnabledProvider.notifier).state = v;
-                    changed();
-                  },
+                // Audio is genuinely absent from this build: there is no audio
+                // dependency and no sound file in the project, so these are
+                // shown as unavailable rather than as switches that do nothing.
+                ListTile(
+                  enabled: false,
+                  leading: const Icon(Icons.volume_off_outlined),
+                  title: const Text('Commentary audio & crowd noise'),
+                  subtitle: const Text(
+                      'Not in this build. The game ships no sound files and '
+                      'plays no audio yet.'),
                 ),
               ],
             ),
@@ -210,36 +247,48 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
           if (hasCareer) ...[
             const SectionHeader(title: 'Career'),
             Card(
-              child: ListTile(
-                leading: const Icon(Icons.save_outlined),
-                title: const Text('Save career now'),
-                subtitle: const Text(
-                    'Manually persist your club, squad and season progress'),
-                trailing: _saving
-                    ? const SizedBox(
-                        width: 20,
-                        height: 20,
-                        child: CircularProgressIndicator(strokeWidth: 2),
-                      )
-                    : const Icon(Icons.chevron_right),
-                onTap: _saving
-                    ? null
-                    : () async {
-                        // Capture the messenger before awaiting so no
-                        // BuildContext is used across the async gap.
-                        final messenger = ScaffoldMessenger.of(context);
-                        setState(() => _saving = true);
-                        final ok = await saveCareerNow(ref);
-                        if (!mounted) return;
-                        setState(() => _saving = false);
-                        messenger.showSnackBar(
-                          SnackBar(
-                            content: Text(ok
-                                ? 'Career saved'
-                                : 'Save failed — check device storage'),
-                          ),
-                        );
-                      },
+              child: Column(
+                children: [
+                  ListTile(
+                    leading: const Icon(Icons.save_outlined),
+                    title: const Text('Save career now'),
+                    subtitle: const Text(
+                        'Manually persist your club, squad and season progress'),
+                    trailing: _saving
+                        ? const SizedBox(
+                            width: 20,
+                            height: 20,
+                            child: CircularProgressIndicator(strokeWidth: 2),
+                          )
+                        : const Icon(Icons.chevron_right),
+                    onTap: _saving
+                        ? null
+                        : () async {
+                            // Capture the messenger before awaiting so no
+                            // BuildContext is used across the async gap.
+                            final messenger = ScaffoldMessenger.of(context);
+                            setState(() => _saving = true);
+                            final ok = await saveCareerNow(ref);
+                            if (!mounted) return;
+                            setState(() => _saving = false);
+                            messenger.showSnackBar(
+                              SnackBar(
+                                content: Text(ok
+                                    ? 'Career saved'
+                                    : 'Save failed — check device storage'),
+                              ),
+                            );
+                          },
+                  ),
+                  ListTile(
+                    leading: const Icon(Icons.home_outlined),
+                    title: const Text('Back to main menu'),
+                    subtitle: const Text(
+                        'Your career is saved automatically as you play'),
+                    trailing: const Icon(Icons.chevron_right),
+                    onTap: () => context.push('/main-menu'),
+                  ),
+                ],
               ),
             ),
           ],
@@ -253,7 +302,14 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                   title: const Text('Privacy Policy'),
                   subtitle: const Text('How your data is handled'),
                   trailing: const Icon(Icons.chevron_right),
-                  onTap: () => context.go('/privacy'),
+                  onTap: () => context.push('/privacy'),
+                ),
+                ListTile(
+                  leading: const Icon(Icons.restart_alt),
+                  title: const Text('Reset settings'),
+                  subtitle: const Text('Restore every option to its default'),
+                  trailing: const Icon(Icons.chevron_right),
+                  onTap: () => _confirmReset(context, ref),
                 ),
               ],
             ),
@@ -267,6 +323,37 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
           ),
         ],
       ),
+    );
+  }
+
+  /// Asks before wiping every option; the messenger is captured up front so no
+  /// [BuildContext] is used across the dialog's await.
+  Future<void> _confirmReset(BuildContext context, WidgetRef ref) async {
+    final messenger = ScaffoldMessenger.of(context);
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Reset all settings?'),
+        content: const Text(
+            'Every option returns to its default. Your career is not '
+            'affected.'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(dialogContext, true),
+            child: const Text('Reset'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+    resetSettingsToDefaults(ref);
+    syncSackRiskToManager(ref);
+    messenger.showSnackBar(
+      const SnackBar(content: Text('Settings restored to defaults')),
     );
   }
 }

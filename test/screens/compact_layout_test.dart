@@ -133,8 +133,10 @@ void main() {
     await tester.pump();
 
     expect(find.text('Play match'), findsOneWidget);
-    // Stat labels are upper-cased by [StatCard].
-    expect(find.text('BUDGET'), findsOneWidget);
+    // The four season numbers live on one strip; every label must fit.
+    for (final label in ['POS', 'PTS', 'W-D-L', 'BUDGET']) {
+      expect(find.text(label), findsOneWidget, reason: label);
+    }
   });
 
   testWidgets('Squad screen fits and opens every tab', (tester) async {
@@ -147,6 +149,20 @@ void main() {
       await openTab(tester, label);
       expect(tester.takeException(), isNull, reason: 'tab "$label" overflowed');
     }
+  });
+
+  testWidgets('Squad Transfers tab shows the market, not a dead-end button',
+      (tester) async {
+    await pumpAtNarrow(tester, const TeamManagementScreen());
+    await tester.pump();
+    await openTab(tester, 'Transfers');
+
+    expect(find.text('Open Transfer Hub'), findsNothing,
+        reason: 'the tab itself is the market');
+    expect(find.text('Transfer budget'), findsOneWidget);
+    expect(find.text('Away 15'), findsOneWidget,
+        reason: 'the strongest signable player is listed in the market');
+    expect(tester.takeException(), isNull);
   });
 
   testWidgets('Tactics renders the formation preview and category tabs',

@@ -32,9 +32,14 @@ final appRouter = GoRouter(
       path: '/startup',
       builder: (context, state) => const StartupScreen(),
     ),
-    GoRoute(
-      path: '/main-menu',
-      builder: (context, state) => const MainMenuScreen(),
+    ShellRoute(
+      builder: (context, state, child) => HomeShell(child: child),
+      routes: [
+        GoRoute(
+          path: '/main-menu',
+          builder: (context, state) => const MainMenuScreen(),
+        ),
+      ],
     ),
     GoRoute(
       path: '/new-career',
@@ -59,15 +64,19 @@ final appRouter = GoRouter(
           path: '/settings',
           builder: (context, state) => const SettingsScreen(),
         ),
+        // Drill-downs from Home. They live inside the ShellRoute so the
+        // navigation bar stays put, and they are reached with `push` rather
+        // than `go` so the system back gesture returns to Home instead of
+        // exiting the app.
+        GoRoute(
+          path: '/transfers',
+          builder: (context, state) => const TransferMarketScreen(),
+        ),
+        GoRoute(
+          path: '/league-table',
+          builder: (context, state) => const LeagueTableScreen(),
+        ),
       ],
-    ),
-    GoRoute(
-      path: '/transfers',
-      builder: (context, state) => const TransferMarketScreen(),
-    ),
-    GoRoute(
-      path: '/league-table',
-      builder: (context, state) => const LeagueTableScreen(),
     ),
     GoRoute(
       path: '/privacy',

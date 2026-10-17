@@ -4,6 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../core/models/player.dart';
 import '../core/models/team.dart';
 import '../core/services/csv_loader_service.dart';
+import '../core/services/transfer_market_service.dart';
 
 /// Asset path of the bundled player database.
 const String kPlayerCsvAsset = 'lib/data/csv/EAFC26-Men.csv';
@@ -103,6 +104,10 @@ final playerDatabaseProvider =
       budget: _budgetForTier(avgOvr.round()).round(),
       color: _colorForTeam(id),
       badgeUrl: '',
+      // Reputation used to default to 70 for every club, which made prestige
+      // meaningless in the transfer market. Deriving it from squad strength
+      // makes Real Madrid a genuinely bigger draw than Espanyol.
+      reputation: _reputationFor(avgOvr.round()),
       squad: squadPlayers,
     ));
   });
@@ -122,6 +127,10 @@ final playerDatabaseProvider =
       ),
   ]..sort((a, b) => b.teamCount.compareTo(a.teamCount));
 
+  // Contracts, wages and valuations are derived once at load, so the market
+  // can price a player and know when his deal expires.
+  TransferMarketService().backfillTransferData(teams, DateTime.now().year);
+
   return PlayerDatabase(
     players: players,
     teams: teams,
@@ -137,6 +146,24 @@ final playerDatabaseProvider =
 final loadedPlayersProvider = Provider<List<Player>>((ref) {
   final db = ref.watch(playerDatabaseProvider).valueOrNull;
   return db?.players ?? const [];
+});
+
+/// Every nationality present in the loaded dataset, sorted.
+///
+/// Derived here rather than recomputed inside the New Career screen: the CSV
+/// holds over 16,000 players, and building the set inline meant walking and
+/// sorting all of them on every search keystroke and every slider tick. This
+/// runs once per database load. Built from the real data, so it can only ever
+/// offer a country that actually has players in it.
+final nationalitiesProvider = Provider<List<String>>((ref) {
+  final players = ref.watch(loadedPlayersProvider);
+  final seen = <String>{};
+  for (final p in players) {
+    final n = p.nationality.trim();
+    if (n.isNotEmpty) seen.add(n);
+  }
+  if (seen.isEmpty) return const ['Unknown'];
+  return seen.toList()..sort();
 });
 
 String _slugify(String value) =>
@@ -173,6 +200,9 @@ String _shortName(String name) {
 }
 
 /// Budget tiers by average squad OVR.
+/// Club prestige on the same 0-100 scale the transfer market reads.
+int _reputationFor(int avgOvr) => (40 + avgOvr * 0.55).round().clamp(40, 95);
+
 double _budgetForTier(int avgOvr) {
   if (avgOvr >= 82) return 200000000;
   if (avgOvr >= 78) return 100000000;

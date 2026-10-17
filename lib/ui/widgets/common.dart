@@ -143,9 +143,13 @@ class EmptyState extends StatelessWidget {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Icon(icon, size: 48, color: theme.colorScheme.onSurface.withValues(alpha: 0.25)),
+            Icon(icon,
+                size: 48,
+                color: theme.colorScheme.onSurface.withValues(alpha: 0.25)),
             const SizedBox(height: 12),
-            Text(title, style: theme.textTheme.titleMedium, textAlign: TextAlign.center),
+            Text(title,
+                style: theme.textTheme.titleMedium,
+                textAlign: TextAlign.center),
             if (message != null) ...[
               const SizedBox(height: 6),
               Text(
@@ -203,7 +207,8 @@ class ErrorState extends StatelessWidget {
             Icon(Icons.error_outline,
                 size: 48, color: Theme.of(context).colorScheme.error),
             const SizedBox(height: 12),
-            Text(message, style: Theme.of(context).textTheme.titleMedium,
+            Text(message,
+                style: Theme.of(context).textTheme.titleMedium,
                 textAlign: TextAlign.center),
             if (onRetry != null) ...[
               const SizedBox(height: 16),
@@ -262,7 +267,9 @@ class MeterBar extends StatelessWidget {
             backgroundColor:
                 theme.colorScheme.onSurface.withValues(alpha: 0.08),
             valueColor: AlwaysStoppedAnimation(
-              color ?? AppTheme.ovrColor((fraction * 100).round()),
+              color ??
+                  AppTheme.ovrColorFor(
+                      theme.brightness, (fraction * 100).round()),
             ),
           ),
         ),

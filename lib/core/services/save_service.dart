@@ -120,6 +120,28 @@ class SaveService {
 
   /// Stores a JSON-encodable blob in the meta box (schema v1 addendum used
   /// for data that has no dedicated adapter: youth academy, form history).
+  /// Erases every persisted career: the manager, the club, the season and the
+  /// career blob.
+  ///
+  /// Used when a career genuinely ends (the board sacks the manager) so the
+  /// main menu cannot offer to "Continue" a career that no longer exists. The
+  /// player database and the settings box are untouched.
+  Future<void> deleteCareer() async {
+    for (final name in [_managerBox, _seasonBox]) {
+      final box = await Hive.openBox<dynamic>(name);
+      await box.clear();
+    }
+    final teams = await Hive.openBox<Team>(_teamsBox);
+    // Only the manager's own club is a career artefact; the rest of the teams
+    // box is populated by the database and shared between careers.
+    final manager = await loadManager();
+    if (manager != null) {
+      await teams.delete(manager.teamId);
+    }
+    final meta = await Hive.openBox<dynamic>(_metaBox);
+    await meta.delete('career_blob');
+  }
+
   Future<void> saveJson(String key, Map<String, dynamic> value) async {
     final box = await Hive.openBox<dynamic>(_metaBox);
     await box.put(key, value);

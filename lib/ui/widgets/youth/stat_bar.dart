@@ -55,8 +55,8 @@ class YouthStatBar extends StatelessWidget {
             minHeight: 7,
             backgroundColor:
                 theme.colorScheme.onSurface.withValues(alpha: 0.08),
-            valueColor:
-                AlwaysStoppedAnimation(AppTheme.ovrColor(value.round())),
+            valueColor: AlwaysStoppedAnimation(
+                AppTheme.ovrColorFor(theme.brightness, value.round())),
           ),
         ),
       ],

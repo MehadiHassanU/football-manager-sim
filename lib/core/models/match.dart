@@ -1,4 +1,3 @@
-
 class MatchEvent {
   final String type;
   final String team;
@@ -26,6 +25,12 @@ class MatchEvent {
   bool get isSubstitution => type == 'sub';
   bool get isChance => type == 'chance';
   bool get isCommentary => type == 'commentary';
+  bool get isFoul => type == 'foul';
+  bool get isCorner => type == 'corner';
+  bool get isOffside => type == 'offside';
+  bool get isSave => type == 'save';
+  bool get isKickOff => type == 'kickoff';
+  bool get isHalfTime => type == 'halfTime';
 }
 
 class PlayerRating {
