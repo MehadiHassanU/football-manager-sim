@@ -210,7 +210,9 @@ bool canFillSlot(Player player, String slot) =>
 /// who can fill them; any slot still empty is back-filled with the strongest
 /// remaining squad member, because an incomplete XI would be worse than a
 /// mis-placed one. [minFitness] mirrors the match screen: players below the
-/// threshold are skipped when a fit alternative exists.
+/// threshold are skipped when a fit alternative exists. Players in the
+/// treatment room slide down the pecking order the same way — an injured
+/// regular only takes the field when nobody fit can stand in for him.
 List<Player> selectStartingEleven(
   List<Player> squad,
   Formation formation, {
@@ -222,7 +224,12 @@ List<Player> selectStartingEleven(
   final picked = <Player>[];
 
   void takeBest(bool Function(Player) ok) {
-    remaining.sort((a, b) => b.ovr.compareTo(a.ovr));
+    remaining.sort((a, b) {
+      // Fit bodies first: the injured are only picked when the alternative
+      // would be to leave the slot empty.
+      if (a.isInjured != b.isInjured) return a.isInjured ? 1 : -1;
+      return b.ovr.compareTo(a.ovr);
+    });
     final index = remaining.indexWhere(ok);
     if (index < 0) return;
     picked.add(remaining.removeAt(index));

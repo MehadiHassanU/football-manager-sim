@@ -193,6 +193,8 @@ class _OverviewTab extends StatelessWidget {
     final leadership = player.hiddenAttributes['leadership'];
     final fitness = player.isInjured
         ? 'Injured${player.injuryType != null ? ' · ${player.injuryType}' : ''}'
+            '${player.injuryReturnDate != null ? ' · back around '
+                '${shortDate(player.injuryReturnDate!)}' : ''}'
         : 'Fit';
 
     return ListView(
@@ -379,7 +381,11 @@ class _DevelopmentTab extends StatelessWidget {
         !atCeiling &&
         player.age < 31;
     final status = player.isInjured
-        ? 'In the treatment room: no development until he is fit again.'
+        ? (player.injuryReturnDate == null
+            ? 'In the treatment room: no development until he is fit again.'
+            : 'In the treatment room until around '
+                '${shortDate(player.injuryReturnDate!)}: no development '
+                'until he is fit again.')
         : player.age >= 31
             ? 'In the decline years: game time no longer adds points.'
             : atCeiling

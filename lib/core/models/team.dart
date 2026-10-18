@@ -95,7 +95,8 @@ class Team {
 
   bool get hasSquadSpace => squadSize < 25;
 
-  List<Player> get starters => squad.where((p) => p.fitness > 45).toList();
+  List<Player> get starters =>
+      squad.where((p) => p.fitness > 45 && !p.isInjured).toList();
 
   Map<String, dynamic> toJson() => {
         'id': id,

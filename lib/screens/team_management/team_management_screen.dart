@@ -848,6 +848,17 @@ class _PlayerCard extends StatelessWidget {
   final VoidCallback onTap;
   final String? status;
 
+  /// The one-line story of the player right now: an injury and its expected
+  /// return beat the squad role, because it changes what the manager can do.
+  String _subtitle() {
+    if (player.isInjured) {
+      final type = player.injuryType ?? 'Injured';
+      final back = player.injuryReturnDate;
+      return back == null ? type : '$type · back ${shortDate(back)}';
+    }
+    return status ?? '${player.age} yrs';
+  }
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
@@ -863,10 +874,29 @@ class _PlayerCard extends StatelessWidget {
         subtitle: Row(
           children: [
             PositionChip(position: player.primaryPosition),
+            if (player.isInjured) ...[
+              const SizedBox(width: 6),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 3),
+                decoration: BoxDecoration(
+                  color: const Color(0xFFEF5350).withValues(alpha: 0.16),
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: const Text(
+                  'INJ',
+                  style: TextStyle(
+                    fontSize: 10,
+                    fontWeight: FontWeight.w800,
+                    letterSpacing: 0.4,
+                    color: Color(0xFFEF5350),
+                  ),
+                ),
+              ),
+            ],
             const SizedBox(width: 8),
             Flexible(
               child: Text(
-                status == null ? '${player.age} yrs' : status!,
+                _subtitle(),
                 style: theme.textTheme.bodySmall,
                 overflow: TextOverflow.ellipsis,
               ),

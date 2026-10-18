@@ -3,6 +3,15 @@ import 'package:flutter/material.dart';
 import '../../core/models/player.dart';
 import '../theme/app_theme.dart';
 
+/// "12 Nov" — the year is implied by the season, so dates stay compact.
+String shortDate(DateTime date) {
+  const months = [
+    'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+    'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec',
+  ];
+  return '${date.day} ${months[date.month - 1]}';
+}
+
 /// Color-coded OVR badge (elite green → poor red).
 class OvrBadge extends StatelessWidget {
   const OvrBadge({super.key, required this.ovr, this.size = 34});

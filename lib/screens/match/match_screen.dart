@@ -986,10 +986,13 @@ List<Player> _startingXi(List<Player> squad, Formation formation) =>
     startingOutfield(squad, formation);
 
 Player? _pickGoalkeeper(List<Player> squad) {
-  for (final p in squad) {
-    if (p.primaryPosition == 'GK') return p;
+  final keepers = squad.where((p) => p.primaryPosition == 'GK').toList();
+  // A fit keeper takes the gloves; an injured one only plays when there is
+  // nobody else at all (the synthetic fallback is strictly worse).
+  for (final keeper in keepers) {
+    if (!keeper.isInjured) return keeper;
   }
-  return null;
+  return keepers.isEmpty ? null : keepers.first;
 }
 
 /// Synthetic keeper used only when a squad has no goalkeeper at all, so a

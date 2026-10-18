@@ -18,6 +18,7 @@ import '../core/constants/game_constants.dart';
 import '../core/services/cup_service.dart';
 import '../core/services/development_service.dart';
 import '../core/services/financial_service.dart';
+import '../core/services/injury_service.dart';
 import '../core/services/match_simulator_service.dart';
 import '../core/services/rival_market_service.dart';
 import '../core/services/transfer_market_service.dart';
@@ -469,6 +470,9 @@ BoardVerdict? applyMatchResult(WidgetRef ref, MatchResult result) {
 
   if (firstRun) {
     _recordAppearances(session.team, result, userIsHome: userIsHome);
+    // Before the training week: a player who went down in this match must
+    // not develop on the back of it.
+    _applyMatchInjuries(session, result, userIsHome: userIsHome);
     // A played match is also a training week: minutes on the pitch decide how
     // much of the week's work actually counts towards development.
     _developTrainingWeek(
@@ -555,9 +559,61 @@ Map<String, int> _minutesByName(
   return {for (final rating in ratings) rating.playerName: rating.minutes};
 }
 
+/// Rolls the match report's injury scares into real absences.
+///
+/// The engine reports every time a player went down; the physio decides how
+/// much of it is real. The manager's own side is the only side that matters
+/// here — rival squads are rebuilt from the CSV every session and have
+/// nowhere to carry an injury.
+void _applyMatchInjuries(
+  CareerSession session,
+  MatchResult result, {
+  required bool userIsHome,
+}) {
+  final side = userIsHome ? 'home' : 'away';
+  final down = {
+    for (final event in result.events)
+      if (event.isInjury && event.team == side) event.player,
+  };
+  if (down.isEmpty) return;
+  final season = session.season;
+  final injured = InjuryService.applyMatchInjuries(
+    session.team.squad,
+    down,
+    leagueId: season.leagueId,
+    year: season.currentYear,
+    matchday: season.currentMatchday,
+  );
+  for (final player in injured) {
+    _addMedicalNews(session, player);
+  }
+}
+
+/// Puts a fresh injury in the news feed with the expected return.
+void _addMedicalNews(CareerSession session, Player player) {
+  final season = session.season;
+  final weeks = InjuryService.weeksOut(
+    player,
+    year: season.currentYear,
+    matchday: season.currentMatchday,
+  );
+  session.transferDesk.addNews(TransferNewsItem(
+    type: 'injury',
+    title: 'Medical: ${player.name} out with ${player.injuryType}',
+    body: weeks <= 1
+        ? 'Expected to miss about a week.'
+        : 'Expected back in about $weeks weeks.',
+    matchday: season.currentMatchday,
+  ));
+}
+
 /// One week of training: the squad creeps towards (or away from) its
 /// potential with [minutes] deciding how much the week is worth, and the
 /// academy prospects tick along on the same clock.
+///
+/// The week also runs the treatment room: anyone whose expected return has
+/// arrived trains again, and a small per-player chance of a training-ground
+/// knock keeps the physio busy between matches.
 ///
 /// Rival squads develop at the rollover instead, because only the manager's
 /// matches produce minute-by-minute reports.
@@ -566,6 +622,11 @@ void _developTrainingWeek(
   Map<String, int> minutes = const {},
 }) {
   final season = session.season;
+  InjuryService.healDue(
+    session.team.squad,
+    year: season.currentYear,
+    matchday: season.currentMatchday,
+  );
   for (final player in session.team.squad) {
     DevelopmentService.developWeek(
       player,
@@ -574,6 +635,14 @@ void _developTrainingWeek(
       year: season.currentYear,
       matchday: season.currentMatchday,
     );
+    if (InjuryService.rollTrainingKnock(
+      player,
+      leagueId: season.leagueId,
+      year: season.currentYear,
+      matchday: season.currentMatchday,
+    )) {
+      _addMedicalNews(session, player);
+    }
   }
   for (final prospect in session.youthPlayers) {
     DevelopmentService.developYouth(
