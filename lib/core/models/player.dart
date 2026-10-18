@@ -154,7 +154,7 @@ class Player {
     Map<String, dynamic>? hiddenAttributes,
     Random? random,
   }) : hiddenAttributes = hiddenAttributes ??
-            _rollHiddenAttributes(ovr, random ?? Random());
+            _rollHiddenAttributes(ovr, age, random ?? Random());
 
   /// Rolls the attributes that are not present in the CSV dataset.
   ///
@@ -162,13 +162,32 @@ class Player {
   /// which makes generated squads reproducible. Reproducibility is what save
   /// round-trip and match-engine tests depend on; the previous inline
   /// `Random()` literals made every construction non-deterministic.
-  static Map<String, dynamic> _rollHiddenAttributes(int ovr, Random random) => {
-        'potential': ovr + random.nextInt(5),
-        'personality':
-            const ['Stable', 'Driven', 'Charismatic', 'Temperamental'][random.nextInt(4)],
-        'leadership': random.nextInt(100),
-        'adaptability': random.nextInt(100),
-      };
+  ///
+  /// `potential` is the ceiling the development engine grows an OVR towards,
+  /// so it carries real headroom for young players and almost none for
+  /// veterans: a 19-year-old can add a dozen points across a career, a
+  /// 33-year-old has nothing left in the tank.
+  static Map<String, dynamic> _rollHiddenAttributes(
+    int ovr,
+    int age,
+    Random random,
+  ) {
+    final (low, high) = switch (age) {
+      <= 18 => (6, 18),
+      <= 21 => (4, 14),
+      <= 24 => (2, 10),
+      <= 28 => (1, 6),
+      <= 32 => (0, 3),
+      _ => (0, 1),
+    };
+    return {
+      'potential': (ovr + low + random.nextInt(high - low + 1)).clamp(40, 99),
+      'personality':
+          const ['Stable', 'Driven', 'Charismatic', 'Temperamental'][random.nextInt(4)],
+      'leadership': random.nextInt(100),
+      'adaptability': random.nextInt(100),
+    };
+  }
 
   Map<String, dynamic> toJson() => {
     'name': name, 'id': id, 'nationality': nationality,

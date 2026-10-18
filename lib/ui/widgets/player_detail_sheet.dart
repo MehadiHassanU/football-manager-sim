@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/models/player.dart';
+import '../../core/services/development_service.dart';
 import '../../core/services/financial_service.dart';
 import '../../providers/career_session_provider.dart';
 import 'common.dart';
@@ -367,6 +368,23 @@ class _DevelopmentTab extends StatelessWidget {
     final adaptability = player.hiddenAttributes['adaptability'];
     final focus = trainingFocusOf(player);
     final growth = (potential is int) ? potential - player.ovr : null;
+    final progress = ((player.hiddenAttributes[DevelopmentService.progressKey]
+                    as num?)
+                ?.toDouble() ??
+            0.0)
+        .clamp(0.0, 1.0);
+    final atCeiling = potential is int && player.ovr >= potential;
+    final showing = enabled &&
+        !player.isInjured &&
+        !atCeiling &&
+        player.age < 31;
+    final status = player.isInjured
+        ? 'In the treatment room: no development until he is fit again.'
+        : player.age >= 31
+            ? 'In the decline years: game time no longer adds points.'
+            : atCeiling
+                ? 'At his ceiling: there is nothing left to grow into.'
+                : 'Minutes on the pitch decide how much of the week counts.';
 
     return ListView(
       padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
@@ -396,7 +414,11 @@ class _DevelopmentTab extends StatelessWidget {
                     children: [
                       Text('Room to grow', style: theme.textTheme.bodySmall),
                       Text(
-                        growth == null ? '—' : '+$growth potential',
+                        growth == null
+                            ? '—'
+                            : growth <= 0
+                                ? 'No room left'
+                                : '+$growth potential',
                         style: theme.textTheme.bodySmall
                             ?.copyWith(fontWeight: FontWeight.w700),
                       ),
@@ -410,6 +432,16 @@ class _DevelopmentTab extends StatelessWidget {
                     value: adaptability.toDouble(),
                   ),
                 ],
+                const SizedBox(height: 10),
+                if (showing) ...[
+                  MeterBar(
+                    label: 'Towards next point',
+                    value: progress * 100,
+                    color: const Color(0xFF69F0AE),
+                  ),
+                  const SizedBox(height: 10),
+                ],
+                Text(status, style: theme.textTheme.bodySmall),
               ],
             ),
           ),

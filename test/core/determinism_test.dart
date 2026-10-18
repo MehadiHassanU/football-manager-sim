@@ -88,11 +88,13 @@ void main() {
       );
     });
 
-    test('potential stays within ovr + 0..4 for every seed tried', () {
+    test('potential scales its headroom with age for every seed tried', () {
+      // The development engine grows OVR towards `potential`, so the rolled
+      // headroom is age-shaped: a 24-year-old carries +2..+10 over his OVR.
       for (final seed in const [1, 7, 13, 42, 99, 2026]) {
         final potential =
             _player(random: Random(seed)).hiddenAttributes['potential'] as int;
-        expect(potential, inInclusiveRange(80, 84));
+        expect(potential, inInclusiveRange(82, 90));
       }
     });
 

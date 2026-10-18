@@ -16,6 +16,7 @@ import '../core/models/transfer.dart';
 import '../core/models/youth_player.dart';
 import '../core/constants/game_constants.dart';
 import '../core/services/cup_service.dart';
+import '../core/services/development_service.dart';
 import '../core/services/financial_service.dart';
 import '../core/services/match_simulator_service.dart';
 import '../core/services/rival_market_service.dart';
@@ -42,11 +43,13 @@ class CareerSession {
     this.boardNote = '',
     TransferDesk? transferDesk,
     List<String>? trophies,
+    Map<int, int>? worldGrowth,
   })  : startXI = startXI ?? [],
         userResults = userResults ?? [],
         youthPlayers = youthPlayers ?? [],
         transferDesk = transferDesk ?? TransferDesk(),
-        trophies = trophies ?? [];
+        trophies = trophies ?? [],
+        worldGrowth = worldGrowth ?? <int, int>{};
 
   final Manager manager;
   final Team team;
@@ -78,6 +81,14 @@ class CareerSession {
   /// victory settles the board down for a while.
   final List<String> trophies;
 
+  /// Net OVR change per rival player id, accumulated at season rollovers.
+  ///
+  /// Rival squads are rebuilt from the CSV every session, so their season
+  /// development cannot live on the players themselves; it is recorded here
+  /// (one entry per player, replaced as seasons pass) and layered back on top
+  /// of the fresh ratings at restore.
+  final Map<int, int> worldGrowth;
+
   /// `Map<String, int>` get standings -> see [season].
   Map<String, int> get standings => season.standings;
 
@@ -101,6 +112,7 @@ class CareerSession {
         boardNote: boardNote,
         transferDesk: transferDesk,
         trophies: trophies,
+        worldGrowth: worldGrowth,
       );
 }
 
@@ -213,6 +225,10 @@ Future<bool> saveCareerNow(WidgetRef ref) async {
       'youthPlayers': [for (final y in session.youthPlayers) y.toJson()],
       'userResults': List<int>.from(session.userResults),
       'trophies': List<String>.from(session.trophies),
+      'worldGrowth': {
+        for (final entry in session.worldGrowth.entries)
+          '${entry.key}': entry.value,
+      },
       'startXI': List<int>.from(session.startXI),
       'shortlist': ref.read(shortlistProvider).toList(),
       'transferOffers': ref.read(transferOffersProvider),
@@ -268,6 +284,16 @@ Future<bool> tryRestoreCareer(WidgetRef ref) async {
       if (trophies is List) {
         session.trophies.addAll(trophies.whereType<String>());
       }
+      final growth = blob['worldGrowth'];
+      if (growth is Map) {
+        for (final entry in growth.entries) {
+          final id = int.tryParse('${entry.key}');
+          final delta = (entry.value as num?)?.toInt();
+          if (id != null && delta != null && delta != 0) {
+            session.worldGrowth[id] = delta;
+          }
+        }
+      }
       final xi = blob['startXI'];
       if (xi is List) {
         session.startXI.addAll(xi.whereType<int>());
@@ -320,6 +346,11 @@ Future<bool> tryRestoreCareer(WidgetRef ref) async {
       moves: session.transferDesk.ledger,
       userClub: team.name,
     );
+
+    // Season development is replayed the same way: recorded OVR deltas go on
+    // top of the fresh CSV ratings so a rival who grew over past seasons
+    // stays grown.
+    DevelopmentService.applyWorldGrowth(db.players, session.worldGrowth);
 
     ref.read(careerSessionProvider.notifier).state = session;
     return true;
@@ -438,6 +469,12 @@ BoardVerdict? applyMatchResult(WidgetRef ref, MatchResult result) {
 
   if (firstRun) {
     _recordAppearances(session.team, result, userIsHome: userIsHome);
+    // A played match is also a training week: minutes on the pitch decide how
+    // much of the week's work actually counts towards development.
+    _developTrainingWeek(
+      session,
+      minutes: _minutesByName(result, userIsHome: userIsHome),
+    );
   }
 
   final advanced = round + 1;
@@ -499,10 +536,53 @@ CareerSession _rebuildSession(CareerSession session, SeasonState season) {
   );
   updated.userResults.addAll(session.userResults);
   updated.trophies.addAll(session.trophies);
+  updated.worldGrowth.addAll(session.worldGrowth);
   updated.youthPlayers.addAll(session.youthPlayers);
   updated.boardNote = session.boardNote;
   updated.transferDesk = session.transferDesk;
   return updated;
+}
+
+/// Minutes per player from the manager's side of the match report; the
+/// simulator returns home ratings first and away ratings second.
+Map<String, int> _minutesByName(
+  MatchResult result, {
+  required bool userIsHome,
+}) {
+  final ratings = userIsHome
+      ? result.playerRatings.take(11)
+      : result.playerRatings.skip(11);
+  return {for (final rating in ratings) rating.playerName: rating.minutes};
+}
+
+/// One week of training: the squad creeps towards (or away from) its
+/// potential with [minutes] deciding how much the week is worth, and the
+/// academy prospects tick along on the same clock.
+///
+/// Rival squads develop at the rollover instead, because only the manager's
+/// matches produce minute-by-minute reports.
+void _developTrainingWeek(
+  CareerSession session, {
+  Map<String, int> minutes = const {},
+}) {
+  final season = session.season;
+  for (final player in session.team.squad) {
+    DevelopmentService.developWeek(
+      player,
+      minutes: minutes[player.name] ?? 0,
+      leagueId: season.leagueId,
+      year: season.currentYear,
+      matchday: season.currentMatchday,
+    );
+  }
+  for (final prospect in session.youthPlayers) {
+    DevelopmentService.developYouth(
+      prospect,
+      leagueId: season.leagueId,
+      year: season.currentYear,
+      matchday: season.currentMatchday,
+    );
+  }
 }
 
 /// Folds the match's rating list into the squad's appearance totals.
@@ -1283,6 +1363,10 @@ void advancePastBye(WidgetRef ref) {
 
   _simulateRemainingFixtures(ref, session, round);
 
+  // No fixture, but not a week off: the training ground still runs, at the
+  // reduced rate a week without a match is worth.
+  _developTrainingWeek(session);
+
   final advanced = round + 1;
   final season = SeasonState(
     leagueId: session.season.leagueId,
@@ -1896,6 +1980,56 @@ class SeasonOutcome {
   final String movement;
 }
 
+/// Ages the whole world by a year and rolls rival squads' season development.
+///
+/// Rivals have no week-by-week record — only the manager's matches produce
+/// ratings — so their growth (and decline) is applied in one pass over the
+/// closed season instead of every matchday. Each player's net OVR change is
+/// recorded on [CareerSession.worldGrowth] so the next restore can replay it
+/// on top of the rebuilt database, the same way the transfer ledger replays
+/// ownership.
+///
+/// Runs after the loan season-end resolution, so returning players belong to
+/// exactly one squad before anyone is aged.
+void _closeSeasonDevelopment(CareerSession session, PlayerDatabase? db) {
+  final year = session.season.currentYear;
+  final league = session.team.leagueId;
+
+  // A player borrowed in this season is on the manager's books right now and
+  // must not also roll through his owner's season; ids keep everyone to one
+  // birthday per close season.
+  final aged = <int>{};
+  void ageOne(Player player) {
+    if (aged.add(player.id)) player.age = min(45, player.age + 1);
+  }
+
+  for (final player in session.team.squad) {
+    ageOne(player);
+  }
+  for (final prospect in session.youthPlayers) {
+    prospect.age += 1;
+  }
+
+  if (db == null) return;
+  final squadIds = {for (final p in session.team.squad) p.id};
+  for (final rival in db.teams.where((t) => t.leagueId == league)) {
+    if (rival.id == session.team.id) continue;
+    for (final player in rival.squad) {
+      if (squadIds.contains(player.id)) continue;
+      ageOne(player);
+      final delta = DevelopmentService.developSeason(
+        player,
+        leagueId: league,
+        year: year,
+      );
+      if (delta != 0) {
+        session.worldGrowth[player.id] =
+            (session.worldGrowth[player.id] ?? 0) + delta;
+      }
+    }
+  }
+}
+
 /// Closes the season and starts the next one.
 ///
 /// Returns null when the season is still in progress. The club moves up or
@@ -2018,6 +2152,11 @@ SeasonOutcome? rollIntoNextSeason(WidgetRef ref) {
         openingBill *
             wageCeilingHeadroomFactor(ref.read(difficultyProvider)));
   }
+
+  // The close of the season is when the world ages: the squad, the academy
+  // and every rival roll a year older, and rivals develop a whole season in
+  // one pass because only the manager's matches produce weekly records.
+  _closeSeasonDevelopment(session, db);
 
   final updated = _rebuildSession(session, nextSeason);
   updated.userResults.clear();
