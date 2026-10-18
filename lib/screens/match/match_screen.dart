@@ -74,6 +74,21 @@ List<MatchEvent> applyCommentarySettings(
   return (home: home, away: away);
 }
 
+/// The tactics each side takes the field with.
+///
+/// Home and away only decide which half a club defends — the manager's
+/// instructions must reach the simulation from either touchline. This used to
+/// be inlined as `userIsHome ? tactic : null`, so every away match was quietly
+/// played on default instructions while home matches got the full effect.
+({Tactic? home, Tactic? away}) matchTacticsFor({
+  required bool userIsHome,
+  required Tactic userTactic,
+}) =>
+    (
+      home: userIsHome ? userTactic : null,
+      away: userIsHome ? null : userTactic,
+    );
+
 class MatchScreen extends ConsumerStatefulWidget {
   const MatchScreen({super.key});
 
@@ -226,6 +241,10 @@ class _MatchScreenState extends ConsumerState<MatchScreen> {
       debugPrint('[MATCH] Simulation started: '
           '${session.team.name} vs ${opponent.name} '
           '(${userIsHome ? 'home' : 'away'})');
+      final tactics = matchTacticsFor(
+        userIsHome: userIsHome,
+        userTactic: session.tactic,
+      );
       final watch = Stopwatch()..start();
       final result = _sim.simulateMatch(
         homeGoalkeeper: userIsHome ? userGk : oppGk,
@@ -234,7 +253,8 @@ class _MatchScreenState extends ConsumerState<MatchScreen> {
         awaySquad: userIsHome ? oppSquad : userSquad,
         homeBench: userIsHome ? userBench : oppBench,
         awayBench: userIsHome ? oppBench : userBench,
-        homeTactic: userIsHome ? session.tactic : null,
+        homeTactic: tactics.home,
+        awayTactic: tactics.away,
       );
       watch.stop();
       debugPrint(
