@@ -390,6 +390,10 @@ class _MatchScreenState extends ConsumerState<MatchScreen> {
     _finishMatch();
   }
 
+  /// Stores the half-time team talk for the matches still to come.
+  ///
+  /// The current match was fully simulated at kick-off and is being replayed
+  /// by the ticker, so nothing said now can reach it — the sheet says so.
   void _applyHalfTimeTweak(Tactic tactic) {
     final session = ref.read(careerSessionProvider);
     if (session != null) {
@@ -398,7 +402,11 @@ class _MatchScreenState extends ConsumerState<MatchScreen> {
     }
     Navigator.of(context).pop();
     ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text('Tactics updated: ${tactic.displayName}')),
+      SnackBar(
+        content: Text(
+          'Tactic set for your next match: ${tactic.displayName}',
+        ),
+      ),
     );
   }
 
@@ -884,6 +892,12 @@ class _HalfTimeSheet extends StatelessWidget {
           children: [
             Text('Half-time team talk',
                 style: Theme.of(context).textTheme.titleLarge),
+            const SizedBox(height: 6),
+            Text(
+              'Tonight\'s XI and plan were locked in at kick-off. What you set '
+              'here is in place for your next match.',
+              style: Theme.of(context).textTheme.bodySmall,
+            ),
             const SizedBox(height: 16),
             _dropdown<PlayingStyle>(
               context,

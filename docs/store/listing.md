@@ -31,13 +31,13 @@ where survival is a trophy.
 LIVE MATCH DAYS
 Every match plays out in about a minute. Watch goals, cards, injuries
 and momentum swings unfold in real time with a live event feed. At
-half-time, step into the dressing room: change your tempo, press higher,
-go for the kill.
+half-time, step into the dressing room and set your instructions for
+the matches ahead.
 
 TOTAL TACTICAL CONTROL
-Playing style, pressing intensity, tempo, width, defensive line,
-possession focus, offside trap, counter press, set pieces — every dial
-matters, and every instruction carries into your next match.
+Playing style and tempo shape how your side takes the game to the
+opposition, while formation decides who takes the field. Set your
+instructions once and they carry into every match you manage.
 
 BUILD THE SQUAD, SHAPE THE FUTURE
 Scout the transfer market within your budget, negotiate fees, and keep
