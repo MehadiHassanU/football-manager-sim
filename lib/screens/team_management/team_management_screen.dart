@@ -51,9 +51,9 @@ class _TeamManagementScreenState extends ConsumerState<TeamManagementScreen> {
       child: Scaffold(
         appBar: AppBar(
           title: Text(team.name),
+          // Non-scrollable (the default fill alignment) so the four tabs share
+          // the width evenly instead of hugging the left edge.
           bottom: const TabBar(
-            isScrollable: true,
-            tabAlignment: TabAlignment.start,
             tabs: [
               Tab(icon: Icon(Icons.groups_outlined), text: 'Squad'),
               Tab(icon: Icon(Icons.swap_horiz), text: 'Transfers'),
@@ -392,8 +392,6 @@ class _TacticsTabState extends ConsumerState<_TacticsTab> {
             ),
           ),
           const TabBar(
-            isScrollable: true,
-            tabAlignment: TabAlignment.start,
             tabs: [
               Tab(text: 'Approach'),
               Tab(text: 'Pressing'),

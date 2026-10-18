@@ -118,11 +118,11 @@ void main() {
     await pumpSessionAtNarrow(tester, _session(), child);
   }
 
-  /// Taps a tab and waits for the page transition to finish. The tab bars are
-  /// scrollable, so the target may start off-screen on a narrow phone.
+  /// Taps a tab and waits for the page transition to finish. Both squad tab
+  /// bars fill the width, so every label is on screen and a direct tap is
+  /// safe. (Calling `ensureVisible` first would walk up to the surrounding
+  /// `TabBarView` and scroll the page itself.)
   Future<void> openTab(WidgetTester tester, String label) async {
-    await tester.ensureVisible(find.text(label));
-    await tester.pumpAndSettle();
     await tester.tap(find.text(label));
     await tester.pump();
     await tester.pumpAndSettle();
@@ -149,6 +149,31 @@ void main() {
       await openTab(tester, label);
       expect(tester.takeException(), isNull, reason: 'tab "$label" overflowed');
     }
+  });
+
+  testWidgets('Squad tabs share the width evenly', (tester) async {
+    await pumpAtNarrow(tester, const TeamManagementScreen());
+    await tester.pump();
+
+    final barFinder = find.byType(TabBar).first;
+    expect(tester.widget<TabBar>(barFinder).isScrollable, isFalse,
+        reason: 'the four tabs must fill the width, not hug the left edge');
+
+    // In a fill bar each tab owns one quarter; its centred label must sit at
+    // the middle of that quarter (1/8, 3/8, 5/8, 7/8 across the bar).
+    final barRect = tester.getRect(barFinder);
+    final centres = [
+      for (final label in ['Squad', 'Transfers', 'Tactics', 'Youth'])
+        tester.getCenter(find.text(label)).dx,
+    ]..sort();
+    for (var i = 0; i < centres.length; i++) {
+      expect(
+        centres[i],
+        closeTo(barRect.left + barRect.width * (2 * i + 1) / 8, 2.0),
+        reason: 'tab ${i + 1} must sit in its own quarter of the bar',
+      );
+    }
+    expect(tester.takeException(), isNull);
   });
 
   testWidgets('Squad Transfers tab shows the market, not a dead-end button',
