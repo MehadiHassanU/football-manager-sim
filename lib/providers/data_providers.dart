@@ -4,6 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../core/models/player.dart';
 import '../core/models/team.dart';
+import '../core/services/financial_service.dart';
 import '../core/services/transfer_market_service.dart';
 import '../core/utils/csv_parser.dart' show parseCsvPlayers;
 
@@ -117,6 +118,11 @@ final playerDatabaseProvider =
     final avgOvr =
         squadPlayers.map((p) => p.ovr).reduce((a, b) => a + b) /
             squadPlayers.length;
+    // Reputation used to default to 70 for every club, which made prestige
+    // meaningless in the transfer market. Deriving it from squad strength
+    // makes Real Madrid a genuinely bigger draw than Espanyol — and the
+    // ground is sized the same way, so capacity stops being a near-constant.
+    final reputation = _reputationFor(avgOvr.round());
     teams.add(Team(
       id: id,
       name: teamName,
@@ -125,14 +131,11 @@ final playerDatabaseProvider =
       country: _majorityNationality(
           squadPlayers.map((p) => p.nationality)),
       stadiumName: '$teamName Stadium',
-      stadiumCapacity: 30000 + (avgOvr.round() * 400),
+      stadiumCapacity: FinancialService().realisticCapacity(reputation, id),
       budget: _budgetForTier(avgOvr.round()).round(),
       color: _colorForTeam(id),
       badgeUrl: '',
-      // Reputation used to default to 70 for every club, which made prestige
-      // meaningless in the transfer market. Deriving it from squad strength
-      // makes Real Madrid a genuinely bigger draw than Espanyol.
-      reputation: _reputationFor(avgOvr.round()),
+      reputation: reputation,
       squad: squadPlayers,
     ));
   });

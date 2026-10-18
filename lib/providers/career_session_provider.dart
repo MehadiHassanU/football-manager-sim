@@ -10,6 +10,7 @@ import '../core/models/manager.dart';
 import '../core/models/match.dart';
 import '../core/models/player.dart';
 import '../core/models/season.dart';
+import '../core/models/sponsorship.dart';
 import '../core/models/team.dart';
 import '../core/models/tactics.dart';
 import '../core/models/transfer.dart';
@@ -22,6 +23,7 @@ import '../core/services/injury_service.dart';
 import '../core/services/match_simulator_service.dart';
 import '../core/services/rival_market_service.dart';
 import '../core/services/scorer_attribution_service.dart';
+import '../core/services/sponsorship_service.dart';
 import '../core/services/transfer_market_service.dart';
 import '../core/services/save_service.dart';
 import 'data_providers.dart';
@@ -47,13 +49,15 @@ class CareerSession {
     TransferDesk? transferDesk,
     List<String>? trophies,
     Map<int, int>? worldGrowth,
+    List<Sponsorship>? sponsorships,
   })  : startXI = startXI ?? [],
         benchIds = benchIds ?? [],
         userResults = userResults ?? [],
         youthPlayers = youthPlayers ?? [],
         transferDesk = transferDesk ?? TransferDesk(),
         trophies = trophies ?? [],
-        worldGrowth = worldGrowth ?? <int, int>{};
+        worldGrowth = worldGrowth ?? <int, int>{},
+        sponsorships = sponsorships ?? <Sponsorship>[];
 
   final Manager manager;
   final Team team;
@@ -98,6 +102,11 @@ class CareerSession {
   /// (one entry per player, replaced as seasons pass) and layered back on top
   /// of the fresh ratings at restore.
   final Map<int, int> worldGrowth;
+
+  /// The club's kit deals, one per slot. Carried in the save blob and renewed
+  /// on the summer rollover; only the manager's club carries deals because
+  /// only its books are simulated week to week.
+  List<Sponsorship> sponsorships;
 
   /// `Map<String, int>` get standings -> see [season].
   Map<String, int> get standings => season.standings;
@@ -151,7 +160,7 @@ final savedTacticsProvider =
 
 /// Key under which career-only data (no dedicated Hive adapter) is stored in
 /// the save meta box: youth academy, form history, starting XI, shortlist,
-/// transfer offers and saved tactics.
+/// transfer offers, saved tactics and the club's kit deals.
 const String _careerMetaKey = 'career_blob';
 
 /// Creates a new career from the selected team and manager identity.
@@ -204,6 +213,13 @@ void startNewCareer(
     season.currentYear,
   );
   session.transferDesk = TransferDesk();
+  // The kit is sold before a ball is kicked: three deals sized to the club's
+  // level, so the first home match already pays its first instalment.
+  session.sponsorships = SponsorshipService().ensureDeals(
+    existing: const [],
+    team: team,
+    year: season.currentYear,
+  );
   // Reset career-only state for the fresh save.
   ref.read(shortlistProvider.notifier).state = {};
   ref.read(transferOffersProvider.notifier).state = [];
@@ -246,6 +262,9 @@ Future<bool> saveCareerNow(WidgetRef ref) async {
       'transferOffers': ref.read(transferOffersProvider),
       'savedTactics': ref.read(savedTacticsProvider),
       'transferDesk': session.transferDesk.toJson(),
+      // The kit deals are the club's steady income: the finances sheet and
+      // the matchday settlement both read them back, so they ride the blob.
+      'sponsorships': [for (final deal in session.sponsorships) deal.toJson()],
       // The active tactic used to live only in memory, so every restart
       // silently reset the formation and instructions.
       'tactic': session.tactic.toJson(),
@@ -314,6 +333,15 @@ Future<bool> tryRestoreCareer(WidgetRef ref) async {
       if (bench is List) {
         session.benchIds.addAll(bench.whereType<int>());
       }
+      final sponsors = blob['sponsorships'];
+      if (sponsors is List) {
+        for (final raw in sponsors) {
+          if (raw is Map) {
+            final deal = Sponsorship.fromJson(Map<String, dynamic>.from(raw));
+            if (deal != null) session.sponsorships.add(deal);
+          }
+        }
+      }
       final shortlist = blob['shortlist'];
       if (shortlist is List) {
         ref.read(shortlistProvider.notifier).state =
@@ -343,6 +371,7 @@ Future<bool> tryRestoreCareer(WidgetRef ref) async {
       [...db.teams, team],
       season.currentYear,
     );
+    repairClubFinances(session);
     final tacticJson = blob?['tactic'];
     if (tacticJson is Map) {
       session.tactic = Tactic.fromJson(Map<String, dynamic>.from(tacticJson));
@@ -525,12 +554,10 @@ BoardVerdict? applyMatchResult(WidgetRef ref, MatchResult result) {
   // Position comes from the ordered table, which ranks the club itself
   // rather than a points value, so tied clubs no longer alias.
   updated.team.leaguePosition = updatedSeason.positionOf(session.team.id);
-  // Gate receipts are credited on home games only.
-  if (userIsHome) {
-    final gate = FinancialService().estimateGateReceipts(session.team);
-    session.team.revenue += gate;
-    session.team.budget += gate.round();
-  }
+  // The matchday settles the club's books: gate receipts on home games,
+  // broadcast money wherever the match is played, the kit instalments in and
+  // the squad's wages out.
+  _settleMatchdayFinances(updated, homeMatch: userIsHome);
 
   // The board reacts to the result, so the sack-risk gauge the Home screen
   // shows actually responds to how the manager is doing.
@@ -564,6 +591,7 @@ CareerSession _rebuildSession(CareerSession session, SeasonState season) {
     tactic: session.tactic,
     startXI: session.startXI,
     benchIds: session.benchIds,
+    sponsorships: session.sponsorships,
   );
   updated.userResults.addAll(session.userResults);
   updated.trophies.addAll(session.trophies);
@@ -1560,6 +1588,8 @@ void advancePastBye(WidgetRef ref) {
   );
   final updated = _rebuildSession(session, season);
   updated.team.leaguePosition = season.positionOf(session.team.id);
+  // A week without a fixture still pays the wages and banks the kit money.
+  _settleMatchdayFinances(updated, playedMatch: false);
   advanceTransferDesk(ref, updated);
   // Cup rounds finish on the club's off-days too: without settling here a
   // knockout round where the club is already out would never progress.
@@ -1843,24 +1873,86 @@ String? wageCeilingRefusal(Team team, double addedWage) {
       'of room.';
 }
 
-/// Gate receipts the club can still expect this season.
+/// Settles one matchday's books for the manager's club.
 ///
-/// A new career has banked nothing, so FFP has to be judged against projected
-/// revenue from the club's remaining home fixtures rather than the cash
-/// already in the bank. Without this the 1.0M fallback inside
-/// [FinancialService.calculateFFPRatio] would make every signing illegal for
-/// the first half of a season.
-double _projectedSeasonRevenue(Team team, SeasonState season) {
+/// Income is gate receipts (home games only), broadcast money (every match,
+/// home or away) and the week's kit instalments; the squad's wages go out.
+/// The net cash lands in the club account and the board passes
+/// [kTransferBudgetRelease] of it to the transfer kitty — the only route by
+/// which earning money turns into spending power.
+void _settleMatchdayFinances(
+  CareerSession session, {
+  bool playedMatch = true,
+  bool homeMatch = false,
+}) {
+  final team = session.team;
+  final finance = FinancialService();
+  final kits = SponsorshipService().weeklyIncome(
+    session.sponsorships,
+    session.season.currentYear,
+  );
+  final gate =
+      playedMatch && homeMatch ? finance.estimateGateReceipts(team) : 0.0;
+  final broadcast =
+      playedMatch ? finance.broadcastPerMatch(team.reputation) : 0.0;
+  // A player out on loan does not stop being paid from this club's account,
+  // which is exactly what [Team.loanedOutWages] is there for.
+  final wages = finance.calculateWageBill(team) + team.loanedOutWages;
+  final income = gate + broadcast + kits;
+  team.revenue += income;
+  team.totalWages += wages;
+  final net = income - wages;
+  team.budget += net.round();
+  team.transferBudget =
+      max(0.0, team.transferBudget + net * kTransferBudgetRelease);
+}
+
+/// The revenue the club can still expect this season.
+///
+/// Every remaining league week banks the kit instalments, every remaining
+/// match adds broadcast money and each remaining home game adds gate
+/// receipts; banked revenue counted so far starts the total. FFP judges
+/// signings against this rather than only the cash already in the bank — a
+/// new career has banked nothing yet, so without the projection the 1.0M
+/// fallback inside [FinancialService.calculateFFPRatio] would make every
+/// signing illegal for the first half of a season.
+double projectedSeasonRevenue(CareerSession session) {
+  final team = session.team;
+  final season = session.season;
+  final finance = FinancialService();
+  final kitWeekly = SponsorshipService()
+      .weeklyIncome(session.sponsorships, season.currentYear);
   var total = team.revenue;
   for (var round = season.currentMatchday;
       round < season.rounds.length;
       round++) {
+    // The kit pays every week, bye week or not.
+    total += kitWeekly;
     final fixture = season.userFixtureForRound(round, team.id);
-    if (fixture != null && fixture.isHomeFor(team.id)) {
-      total += FinancialService().estimateGateReceipts(team);
+    if (fixture == null) continue;
+    total += finance.broadcastPerMatch(team.reputation);
+    if (fixture.isHomeFor(team.id)) {
+      total += finance.estimateGateReceipts(team);
     }
   }
   return total;
+}
+
+/// Repairs a club's finances for the current model.
+///
+/// Saves written before the finance pass carry the flat capacity formula and
+/// no kit deals at all, which would leave the club unable to earn. Rebuilding
+/// both on load gives it a real ground and a sold shirt, without touching any
+/// other club's books. Safe to run on every load: a club that already has its
+/// ground and all three deals is left exactly as it is.
+void repairClubFinances(CareerSession session) {
+  session.team.stadiumCapacity = FinancialService()
+      .realisticCapacity(session.team.reputation, session.team.id);
+  session.sponsorships = SponsorshipService().ensureDeals(
+    existing: session.sponsorships,
+    team: session.team,
+    year: session.season.currentYear,
+  );
 }
 
 /// Buys a player from the transfer market if the budget allows.
@@ -1894,7 +1986,7 @@ bool buyPlayer(
   }
   if (ref.read(ffpEnabledProvider)) {
     final projectedBill = finance.calculateWageBill(session.team) + newWage;
-    final revenue = _projectedSeasonRevenue(session.team, session.season);
+    final revenue = projectedSeasonRevenue(session);
     if (revenue <= 0 || projectedBill / revenue > ffpWageRatioLimit) {
       ref.read(transferBlockReasonProvider.notifier).state =
           'FFP rules block this: the wage bill would reach '
@@ -2242,6 +2334,16 @@ SeasonOutcome? rollIntoNextSeason(WidgetRef ref) {
     }
   }
 
+  // Merit money lands with the final table: the champion banks the biggest
+  // cheque and last place a token share of the same pot, paid into the club
+  // account with the board's usual cut going to the transfer kitty.
+  final merit = FinancialService()
+      .meritPrize(team.reputation, position, season.records.length);
+  if (merit > 0) {
+    team.budget += merit.round();
+    team.transferBudget += merit * kTransferBudgetRelease;
+  }
+
   // Reset the season's own numbers; the club's identity and squad carry over.
   team.points = 0;
   team.wins = 0;
@@ -2251,6 +2353,10 @@ SeasonOutcome? rollIntoNextSeason(WidgetRef ref) {
   team.goalsFor = 0;
   team.goalsAgainst = 0;
   team.leaguePosition = 10;
+  // Revenue and payroll are season figures: the new campaign is judged
+  // against the money it earns, not last year's books.
+  team.revenue = 0;
+  team.totalWages = 0;
 
   // Goals and assists are season tallies, like the table's; the new campaign
   // starts from zero while appearances and minutes stay career totals.
@@ -2347,6 +2453,15 @@ SeasonOutcome? rollIntoNextSeason(WidgetRef ref) {
   _closeSeasonDevelopment(session, db);
 
   final updated = _rebuildSession(session, nextSeason);
+  // Kit deals keep running to the end of their terms; the slots that have
+  // run out are renewed within ±15% of the club's tier value, so a promoted
+  // club gets bigger offers and a relegated one smaller.
+  updated.sponsorships = SponsorshipService().ensureDeals(
+    existing: session.sponsorships,
+    team: team,
+    year: nextSeason.currentYear,
+    revalue: true,
+  );
   updated.userResults.clear();
   // No deal survives the final whistle of a season. Unfinished talks are
   // closed and last season's bids lapse; the new window opens with fresh
@@ -2358,6 +2473,16 @@ SeasonOutcome? rollIntoNextSeason(WidgetRef ref) {
     title: 'A new season begins',
     body: 'The summer window is open. Squad needs, asking prices and rival '
         'interest have all been reset.',
+    matchday: 0,
+  ));
+  final kitTotal = updated.sponsorships
+      .fold<double>(0, (sum, deal) => sum + deal.annualValue);
+  updated.transferDesk.addNews(TransferNewsItem(
+    type: 'finance',
+    title: 'The season is settled',
+    body: 'Finishing ${_ordinal(position)} banked ${_compactEuros(merit)} in '
+        'merit money. The kit deals for the new season are worth '
+        '${_compactEuros(kitTotal)} a year.',
     matchday: 0,
   ));
   ref.read(careerSessionProvider.notifier).state = updated;
@@ -2375,6 +2500,25 @@ SeasonOutcome? rollIntoNextSeason(WidgetRef ref) {
 const String _movementStayed = 'stayed';
 const String _movementPromoted = 'promoted';
 const String _movementRelegated = 'relegated';
+
+/// '1st', '2nd', '3rd', '11th' — league news should read like English.
+String _ordinal(int n) {
+  final mod100 = n % 100;
+  if (mod100 >= 11 && mod100 <= 13) return '${n}th';
+  return switch (n % 10) {
+    1 => '${n}st',
+    2 => '${n}nd',
+    3 => '${n}rd',
+    _ => '${n}th',
+  };
+}
+
+/// Compact euro figure for news lines: '€12.5M', '€400k', '€250'.
+String _compactEuros(double amount) {
+  if (amount >= 1000000) return '€${(amount / 1000000).toStringAsFixed(1)}M';
+  if (amount >= 1000) return '€${(amount / 1000).round()}k';
+  return '€${amount.round()}';
+}
 
 /// Whether the club earned a place in the promotion or relegation zone.
 ///

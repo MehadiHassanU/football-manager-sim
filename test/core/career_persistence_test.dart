@@ -6,6 +6,7 @@ import 'package:football_manager_sim/core/constants/tactic_definitions.dart';
 import 'package:football_manager_sim/core/models/manager.dart';
 import 'package:football_manager_sim/core/models/player.dart';
 import 'package:football_manager_sim/core/models/season.dart';
+import 'package:football_manager_sim/core/models/sponsorship.dart';
 import 'package:football_manager_sim/core/models/team.dart';
 import 'package:football_manager_sim/core/models/tactics.dart';
 import 'package:football_manager_sim/core/models/transfer.dart';
@@ -329,6 +330,41 @@ void main() {
       expect((blob['startXI'] as List).cast<int>(), [1, 2, 3]);
       expect((blob['benchIds'] as List).cast<int>(), [4, 5]);
       expect((blob['savedTactics'] as List).first['name'], 'Press High');
+    });
+
+    test('kit deals survive the career blob', () async {
+      final deals = [
+        Sponsorship(
+          slot: SponsorSlot.front,
+          brand: 'Volt Energy',
+          annualValue: 12000000,
+          startYear: 2026,
+          durationYears: 3,
+        ),
+        Sponsorship(
+          slot: SponsorSlot.sleeve,
+          brand: 'Cobalt Water',
+          annualValue: 3800000,
+          startYear: 2026,
+          durationYears: 2,
+        ),
+      ];
+      await save.saveJson('career_blob', {
+        'sponsorships': [for (final deal in deals) deal.toJson()],
+      });
+
+      final blob = await save.loadJson('career_blob');
+      expect(blob, isNotNull);
+      final restored = [
+        for (final raw in blob!['sponsorships'] as List)
+          Sponsorship.fromJson(Map<String, dynamic>.from(raw as Map)),
+      ];
+      expect(restored, hasLength(2));
+      expect(restored.first!.slot, SponsorSlot.front);
+      expect(restored.first!.brand, 'Volt Energy');
+      expect(restored.first!.annualValue, 12000000);
+      expect(restored.first!.yearsRemaining(2027), 2);
+      expect(restored.last!.slot, SponsorSlot.sleeve);
     });
 
     test('a missing key reads back as null', () async {

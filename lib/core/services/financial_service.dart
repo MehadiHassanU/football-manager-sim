@@ -95,13 +95,98 @@ class FinancialService {
     return (weekly / 100).round() * 100.0;
   }
 
+  /// Broadcast money per league match, paid wherever the match is played.
+  ///
+  /// Half a week's wage bill, so an away match is not a loss-making
+  /// formality: the clubs with the biggest wage bills also collect the
+  /// biggest cheques, at roughly the ratio the real distribution deals use.
+  double broadcastPerMatch(int reputation) {
+    final weekly = _commercialBase(reputation) / kWeeksPerYear;
+    return (weekly * 0.5 / 50000).round() * 50000.0;
+  }
+
+  /// Annual value of the front-of-shirt deal.
+  ///
+  /// The biggest of the three kit slots; the back patch takes 40% of it and
+  /// the sleeve 30%. Sized off the same wage anchor as everything else, so it
+  /// scales from a few million at the bottom to eight figures at the top
+  /// instead of paying a fourth-tier club big-six money.
+  double frontOfShirtValue(int reputation) {
+    final base = _commercialBase(reputation) * 0.206;
+    return (base / 100000).round() * 100000.0;
+  }
+
+  /// Merit prize for finishing [position] of [clubCount].
+  ///
+  /// Real leagues pay by the place: the champion banks the full cheque and
+  /// last place a token share, so finishing one spot higher is worth real
+  /// money to the board.
+  double meritPrize(int reputation, int position, int clubCount) {
+    if (clubCount <= 0) return 0;
+    final champion = _commercialBase(reputation) * 0.12;
+    final place = position.clamp(1, clubCount);
+    final share = (clubCount - place + 1) / clubCount;
+    return (champion * share / 50000).round() * 50000.0;
+  }
+
+  /// A realistic stadium capacity for a club of [reputation].
+  ///
+  /// The old flat `30000 + ovr × 400` gave every club an almost identical
+  /// ground, so attendance meant nothing. These bands run from seven-figure
+  /// crowds at the bottom to a 60-80k arena at the top, with a deterministic
+  /// per-club spread so no two grounds are twins and the same club always
+  /// keeps the same ground.
+  int realisticCapacity(int reputation, String teamId) {
+    final base = switch (reputation) {
+      >= 86 => 68000,
+      >= 82 => 48000,
+      >= 79 => 34000,
+      >= 76 => 26000,
+      >= 73 => 19000,
+      >= 70 => 13000,
+      _ => 9000,
+    };
+    var hash = 0;
+    for (final code in teamId.codeUnits) {
+      hash = (hash * 31 + code) & 0x7fffffff;
+    }
+    final factor = 0.87 + (hash % 27) / 100.0; // 0.87 .. 1.13
+    return ((base * factor) / 500).round() * 500;
+  }
+
+  /// What a squad at [reputation] costs over a year.
+  ///
+  /// Reputation tracks average squad rating (see `_reputationFor`), so this is
+  /// the 25-man annual bill implied by the club's level. Every commercial
+  /// number is a fraction of it, which keeps the whole economy on one scale:
+  /// a small club's deal is small, but it is the same kind of deal.
+  double _commercialBase(int reputation) {
+    final ovr = ((reputation - 40) / 0.55).clamp(55.0, 90.0).toDouble();
+    final weekly = pow(2, (ovr - 60) / 7) * 8000;
+    return (weekly * 25 * kWeeksPerYear).toDouble();
+  }
+
   /// Rough per-match gate receipts from capacity and reputation.
+  ///
+  /// Ticket prices follow the club's level like the rest of the model does —
+  /// an elite ground charges elite prices, a fourth-tier ground pocket money —
+  /// so a full house is a fortune at one club and small change at another
+  /// instead of a flat €60 everywhere.
   double estimateGateReceipts(Team team) {
-    final avgTicket = 35 + team.reputation * 0.35;
     final attendance =
         team.stadiumCapacity * (0.55 + (team.fanTrust / 100) * 0.4);
-    return attendance * avgTicket;
+    return attendance * _ticketPrice(team.reputation);
   }
+
+  double _ticketPrice(int reputation) => switch (reputation) {
+        >= 86 => 55,
+        >= 82 => 38,
+        >= 79 => 28,
+        >= 76 => 22,
+        >= 73 => 16,
+        >= 70 => 12,
+        _ => 9,
+      };
 
   Map<String, dynamic> generateFinancialReport(Team team) {
     final wageBill = calculateWageBill(team);

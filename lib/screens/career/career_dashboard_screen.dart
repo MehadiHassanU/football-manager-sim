@@ -540,13 +540,25 @@ class _FixturePreviewSheet extends StatelessWidget {
                     ),
                   ),
               const SizedBox(height: 12),
-              SizedBox(
-                width: double.infinity,
-                child: OutlinedButton.icon(
-                  onPressed: onViewTable,
-                  icon: const Icon(Icons.table_chart_outlined, size: 18),
-                  label: const Text('League table'),
-                ),
+              Row(
+                children: [
+                  Expanded(
+                    child: OutlinedButton.icon(
+                      onPressed: onViewTable,
+                      icon: const Icon(Icons.table_chart_outlined, size: 18),
+                      label: const Text('League table'),
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: OutlinedButton.icon(
+                      onPressed: () => showClubFinancesSheet(context),
+                      icon: const Icon(Icons.account_balance_wallet_outlined,
+                          size: 18),
+                      label: const Text('Finances'),
+                    ),
+                  ),
+                ],
               ),
             ],
           ),

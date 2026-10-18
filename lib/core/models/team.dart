@@ -10,7 +10,11 @@ class Team {
   String leagueId;
   final String country;
   final String stadiumName;
-  final int stadiumCapacity;
+
+  /// Mutable so the finance repair on load can re-size pre-finance saves to
+  /// the current reputation bands — and so a stadium expansion can land here
+  /// later without another schema change.
+  int stadiumCapacity;
   int budget;
   double transferBudget;
 

@@ -4,10 +4,12 @@ import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:football_manager_sim/core/constants/game_constants.dart';
 import 'package:football_manager_sim/core/models/fixture.dart';
 import 'package:football_manager_sim/core/models/manager.dart';
 import 'package:football_manager_sim/core/models/match.dart';
 import 'package:football_manager_sim/core/models/season.dart';
+import 'package:football_manager_sim/core/models/sponsorship.dart';
 import 'package:football_manager_sim/core/models/team.dart';
 import 'package:football_manager_sim/core/services/financial_service.dart';
 import 'package:football_manager_sim/providers/career_session_provider.dart';
@@ -95,7 +97,8 @@ void main() {
     await disposeTestHive(storageDir);
   });
 
-  testWidgets('a home win credits gate receipts exactly once', (tester) async {
+  testWidgets('a home win settles the matchday books exactly once',
+      (tester) async {
     final db = stubLeagueDatabase(clubCount);
     final ids = [for (final t in db.teams) t.id];
     final rounds = buildRounds(ids, rng: Random(1));
@@ -112,7 +115,15 @@ void main() {
     final home = db.teams.firstWhere((t) => t.id == fixture.homeTeamId);
     final away = db.teams.firstWhere((t) => t.id == fixture.awayTeamId);
     final budgetBefore = session.team.budget;
-    final gate = FinancialService().estimateGateReceipts(session.team).round();
+    final transferBefore = session.team.transferBudget;
+    final revenueBefore = session.team.revenue;
+    final finance = FinancialService();
+    final gate = finance.estimateGateReceipts(session.team);
+    final broadcast = finance.broadcastPerMatch(session.team.reputation);
+    final wages =
+        finance.calculateWageBill(session.team) + session.team.loanedOutWages;
+    // No kit deals on a session built by hand, so income is gate + broadcast.
+    final net = gate + broadcast - wages;
 
     await tester.pumpWidget(
       UncontrolledProviderScope(
@@ -129,8 +140,13 @@ void main() {
     await tester.tap(find.text('apply'));
     await tester.pump();
 
-    expect(session.team.budget, budgetBefore + gate,
-        reason: 'a home match should credit gate receipts once');
+    expect(session.team.budget, budgetBefore + net.round(),
+        reason: 'a home match should settle exactly once');
+    expect(session.team.revenue, revenueBefore + gate + broadcast,
+        reason: 'gate and broadcast money are season revenue');
+    expect(session.team.transferBudget,
+        closeTo(transferBefore + net * kTransferBudgetRelease, 0.01),
+        reason: 'the board frees its share of the net cash');
 
     final after = container.read(careerSessionProvider)!;
     expect(after.season.currentMatchday, homeRound + 1);
@@ -139,7 +155,7 @@ void main() {
     expect(after.season.records[fixture.awayTeamId]!.lost, 1);
   });
 
-  testWidgets('an away win credits no gate receipts and follows the fixture',
+  testWidgets('an away win pays the away week and follows the fixture',
       (tester) async {
     final db = stubLeagueDatabase(clubCount);
     final ids = [for (final t in db.teams) t.id];
@@ -157,6 +173,12 @@ void main() {
     final home = db.teams.firstWhere((t) => t.id == fixture.homeTeamId);
     final away = db.teams.firstWhere((t) => t.id == fixture.awayTeamId);
     final budgetBefore = session.team.budget;
+    final revenueBefore = session.team.revenue;
+    final finance = FinancialService();
+    final broadcast = finance.broadcastPerMatch(session.team.reputation);
+    final wages =
+        finance.calculateWageBill(session.team) + session.team.loanedOutWages;
+    final net = broadcast - wages;
 
     await tester.pumpWidget(
       UncontrolledProviderScope(
@@ -173,7 +195,9 @@ void main() {
     await tester.tap(find.text('apply'));
     await tester.pump();
 
-    expect(session.team.budget, budgetBefore,
+    expect(session.team.budget, budgetBefore + net.round(),
+        reason: 'an away week banks broadcast money but no gate receipts');
+    expect(session.team.revenue, revenueBefore + broadcast,
         reason: 'gate receipts must only be credited at home');
 
     final after = container.read(careerSessionProvider)!;
@@ -237,6 +261,20 @@ void main() {
 
     expect(session.season.isByeRound(userId), isTrue);
 
+    // A bye week still settles books: the kit pays its weekly instalment and
+    // the wage bill goes out; no match means no gate and no broadcast money.
+    final budgetBefore = session.team.budget;
+    final transferBefore = session.team.transferBudget;
+    session.team.squad.first.weeklyWage = 5000;
+    session.sponsorships.add(Sponsorship(
+      slot: SponsorSlot.front,
+      brand: 'Volt Energy',
+      annualValue: 5200000,
+      startYear: session.season.currentYear,
+      durationYears: 2,
+    ));
+    const expectedNet = 5200000 / 52 - 5000;
+
     // Driven through the real dashboard button rather than the provider.
     await tester.pumpWidget(
       UncontrolledProviderScope(
@@ -255,6 +293,10 @@ void main() {
     for (final id in ids.where((id) => id != userId)) {
       expect(after.season.records[id]!.played, greaterThan(0), reason: id);
     }
+    expect(after.team.budget, budgetBefore + expectedNet.round(),
+        reason: 'a bye week still banks kit money and pays wages');
+    expect(after.team.transferBudget,
+        closeTo(transferBefore + expectedNet * kTransferBudgetRelease, 0.01));
   });
 
   testWidgets('goals and assists fold into the squad season totals',

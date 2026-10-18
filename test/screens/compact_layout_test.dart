@@ -139,6 +139,34 @@ void main() {
     }
   });
 
+  testWidgets('the finances sheet fits a 360 dp phone', (tester) async {
+    final session = _session();
+    await pumpSessionAtNarrow(tester, session, const CareerDashboardScreen());
+    await tester.pump();
+
+    // The Fixtures button pair lives on the opponent preview sheet.
+    final opponentId = session.season
+        .currentFixtureFor(session.team.id)!
+        .opponentOf(session.team.id)!;
+    final opponent = stubPlayerDatabase()
+        .teams
+        .firstWhere((t) => t.id == opponentId);
+    await tester.tap(find.text(opponent.name).first);
+    await tester.pumpAndSettle();
+    expect(find.text('League table'), findsOneWidget);
+
+    await tester.ensureVisible(find.text('Finances'));
+    await tester.tap(find.text('Finances'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Club finances'), findsOneWidget);
+    expect(find.text('Cash'), findsOneWidget);
+    expect(find.text('Transfer budget'), findsOneWidget);
+    expect(find.text('Gate receipts'), findsOneWidget);
+    expect(find.text('Broadcast money'), findsOneWidget);
+    // A RenderFlex overflow inside the sheet fails the test here.
+  });
+
   testWidgets('Squad screen fits and opens every tab', (tester) async {
     await pumpAtNarrow(tester, const TeamManagementScreen());
     await tester.pump();

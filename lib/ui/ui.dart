@@ -1,5 +1,6 @@
 export 'theme/app_theme.dart';
 export 'widgets/club_crest.dart';
+export 'widgets/club_finances_sheet.dart';
 export 'widgets/player_badges.dart';
 export 'widgets/selection_picker_sheet.dart';
 export 'widgets/common.dart';

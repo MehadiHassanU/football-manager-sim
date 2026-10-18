@@ -43,6 +43,16 @@ const double hotStreakThreshold = 3;
 
 // Finance
 const double ffpWageRatioLimit = 0.70;
+
+// Money constants
+//
+// [kTransferBudgetRelease] is the share of each matchday's net cash the board
+// frees for the transfer kitty. The rest stays in the club account, where the
+// wage bill can drain it again.
+const double kTransferBudgetRelease = 0.4;
+
+/// Weeks in a year, used to turn annual deal values into weekly instalments.
+const int kWeeksPerYear = 52;
 const double minTransferBudget = 1000000;
 
 // Scouting
