@@ -1,6 +1,7 @@
 import 'dart:math';
 
 import '../models/player.dart';
+import '../utils/season_calendar.dart';
 
 /// A rolled injury: what it is and how long it keeps the player out.
 class Injury {
@@ -33,8 +34,11 @@ class Injury {
 /// because an injury lives on the player and survives save and restore.
 class InjuryService {
   /// Matchday 0 of a season sits at the start of August.
+  ///
+  /// The convention lives on [SeasonCalendar] so the schedule screen and the
+  /// treatment room read one clock; this stays as the physio's door into it.
   static DateTime dateOfMatchday(int year, int matchday) =>
-      DateTime(year, 8, 1).add(Duration(days: 7 * matchday));
+      SeasonCalendar.dateOfRound(year, matchday);
 
   /// Whole weeks until [player] is fit again, 0 when he already is.
   static int weeksOut(
