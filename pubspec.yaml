@@ -4,7 +4,10 @@ publish_to: 'none'
 version: 1.0.0+1
 
 environment:
-  sdk: '>=3.2.0 <4.0.0'
+  # flutter_lints ^5.0.0 needs Dart 3.5, and nothing in lib/ uses a feature
+  # newer than it. The old floor of 3.2 let a 3.2-3.4 SDK resolve to stale
+  # lints while the project's own analysis options assumed the newer set.
+  sdk: '>=3.5.0 <4.0.0'
 
 dependencies:
   flutter:
