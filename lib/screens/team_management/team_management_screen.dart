@@ -64,7 +64,7 @@ class _TeamManagementScreenState extends ConsumerState<TeamManagementScreen> {
         ),
         body: TabBarView(
           children: [
-            _squadTab(context, squad, team.squad),
+            _squadTab(context, session, squad, team.squad),
             _transfersTab(context),
             _TacticsTab(session: session),
             _youthTab(context, session),
@@ -97,6 +97,7 @@ class _TeamManagementScreenState extends ConsumerState<TeamManagementScreen> {
 
   Widget _squadTab(
     BuildContext context,
+    CareerSession session,
     List<Player> squad,
     List<Player> allPlayers,
   ) {
@@ -104,6 +105,13 @@ class _TeamManagementScreenState extends ConsumerState<TeamManagementScreen> {
     // One OVR rank pass per build; each row used to copy + sort the whole
     // squad inside the list builder.
     final rankIndex = squadRankIndex(allPlayers);
+    // Who would walk out for kick-off right now: the squad list flags the XI
+    // so the matchday plans are visible without opening the tactics tab.
+    final xiIds = {
+      for (final p in resolveStartingEleven(
+          allPlayers, session.tactic.formation, session.startXI))
+        p.id,
+    };
     return Column(
       children: [
         Padding(
@@ -178,6 +186,7 @@ class _TeamManagementScreenState extends ConsumerState<TeamManagementScreen> {
                       // squad copies + sorts used to run at scroll speed.
                       status: squadStatusOf(player, allPlayers,
                           rankIndex: rankIndex),
+                      tag: xiIds.contains(player.id) ? 'XI' : null,
                       onTap: () => showPlayerDetailSheet(context, player),
                     );
                   },
@@ -348,6 +357,16 @@ class _TacticsTabState extends ConsumerState<_TacticsTab> {
 
   void _apply(Tactic next) {
     final session = ref.read(careerSessionProvider)!;
+    if (next.formation != session.tactic.formation) {
+      // Carry the manager's picks into the new shape: same slot when the
+      // position still fits, first free compatible slot otherwise.
+      session.startXI = reconcileXiPicks(
+        session.startXI,
+        session.tactic.formation,
+        next.formation,
+        session.team.squad,
+      );
+    }
     session.tactic = next;
     // Re-emit a shallow copy: StateProvider only notifies listeners when the
     // value is a different instance, so assigning `session` was a no-op.
@@ -355,11 +374,76 @@ class _TacticsTabState extends ConsumerState<_TacticsTab> {
     setState(() {});
   }
 
+  /// Stores the manager's pick for one shape slot (or hands it back to the
+  /// assistant when [playerId] is null), keeping the sparse list tidy.
+  void _assignXiSlot(int index, int? playerId) {
+    final session = ref.read(careerSessionProvider)!;
+    final layout =
+        kFormationLayouts[session.tactic.formation] ?? const <PitchPosition>[];
+    if (index >= layout.length) return;
+    final next = List<int>.generate(
+      layout.length,
+      (i) => _storedPick(session.startXI, i),
+      growable: true,
+    );
+    if (playerId != null) {
+      // A player can only stand in one place.
+      for (var i = 0; i < next.length; i++) {
+        if (i != index && next[i] == playerId) next[i] = 0;
+      }
+    }
+    next[index] = playerId ?? 0;
+    session.startXI = _withoutTrailingZeros(next);
+    notifySessionChanged(ref);
+    setState(() {});
+  }
+
+  /// Hands the whole XI back to the assistant.
+  void _autoPickXi() {
+    final session = ref.read(careerSessionProvider)!;
+    session.startXI = [];
+    notifySessionChanged(ref);
+    setState(() {});
+  }
+
+  Future<void> _openXiPicker(int index) async {
+    final session = ref.read(careerSessionProvider)!;
+    final layout =
+        kFormationLayouts[session.tactic.formation] ?? const <PitchPosition>[];
+    if (index >= layout.length) return;
+
+    final currentId = _storedPick(session.startXI, index);
+    final slotLabels = <int, String>{};
+    for (var i = 0; i < layout.length; i++) {
+      final id = _storedPick(session.startXI, i);
+      if (id > 0) slotLabels[id] = 'XI · ${layout[i].position}';
+    }
+
+    final picked = await showSelectionPickerSheet(
+      context,
+      title: 'Pick ${layout[index].position}',
+      squad: session.team.squad,
+      position: layout[index].position,
+      currentPlayerId: currentId > 0 ? currentId : null,
+      slotLabels: slotLabels,
+    );
+    if (picked == null || !mounted) return;
+    _assignXiSlot(index, picked.playerId);
+  }
+
   @override
   Widget build(BuildContext context) {
     final session = ref.watch(careerSessionProvider)!;
     final tactic = session.tactic;
     final saved = ref.watch(savedTacticsProvider);
+    final slots = resolveFormationSlots(
+      session.team.squad,
+      tactic.formation,
+      session.startXI,
+    );
+    final manualPicks = session.startXI.where((id) => id > 0).length;
+    final replaced = slots.where((s) => s.replaced).length;
+    final theme = Theme.of(context);
 
     return DefaultTabController(
       length: 4,
@@ -384,11 +468,44 @@ class _TacticsTabState extends ConsumerState<_TacticsTab> {
             ),
           ),
           Padding(
-            padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
+            padding: const EdgeInsets.fromLTRB(16, 10, 16, 0),
+            child: Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    switch ((manualPicks, replaced)) {
+                      (0, _) =>
+                        'Picked by your assistant — tap a player to change',
+                      (_, 0) => 'Manual XI · $manualPicks of ${slots.length} picked',
+                      _ => 'Manual XI · $replaced of $manualPicks picks out of action',
+                    },
+                    style: theme.textTheme.bodySmall?.copyWith(
+                      color: replaced > 0 ? theme.colorScheme.error : null,
+                    ),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
+                if (manualPicks > 0)
+                  TextButton(
+                    style: TextButton.styleFrom(
+                      minimumSize: Size.zero,
+                      padding: const EdgeInsets.symmetric(horizontal: 8),
+                      tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                    ),
+                    onPressed: _autoPickXi,
+                    child: const Text('Auto-pick'),
+                  ),
+              ],
+            ),
+          ),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 6, 16, 0),
             child: PitchPreview(
-              squad: session.team.squad,
+              slots: slots,
               formation: tactic.formation,
               height: _pitchHeight(context),
+              onSlotTap: _openXiPicker,
             ),
           ),
           const TabBar(
@@ -539,9 +656,10 @@ class _TacticsTabState extends ConsumerState<_TacticsTab> {
   }
 
   /// The pitch grows with the screen but stays short enough on a 640 dp phone
-  /// that the instruction tabs underneath still get usable height.
+  /// that the selection header and the instruction tabs underneath still get
+  /// usable height.
   double _pitchHeight(BuildContext context) =>
-      (MediaQuery.sizeOf(context).height * 0.40).clamp(260.0, 340.0);
+      (MediaQuery.sizeOf(context).height * 0.38).clamp(240.0, 340.0);
 
   Widget _category({required List<Widget> children}) => ListView(
         padding: const EdgeInsets.fromLTRB(16, 12, 16, 16),
@@ -599,7 +717,21 @@ class _TacticsTabState extends ConsumerState<_TacticsTab> {
       };
 }
 
-/// Pitch diagram showing the eleven [formation] actually selects.
+/// The stored pick at [index], or 0 ("let the assistant pick").
+int _storedPick(List<int> ids, int index) =>
+    index < ids.length && ids[index] > 0 ? ids[index] : 0;
+
+/// Sparse selections keep no trailing zeros, so an all-automatic plan is
+/// simply an empty list.
+List<int> _withoutTrailingZeros(List<int> ids) {
+  var end = ids.length;
+  while (end > 0 && ids[end - 1] == 0) {
+    end--;
+  }
+  return end == ids.length ? ids : ids.sublist(0, end);
+}
+
+/// Pitch diagram showing the resolved eleven.
 ///
 /// The previous layout positioned a 2.2-marker-wide token with
 /// `x * width - marker / 2`, which put every marker's centre roughly 18 dp to
@@ -613,17 +745,23 @@ class _TacticsTabState extends ConsumerState<_TacticsTab> {
 class PitchPreview extends StatelessWidget {
   const PitchPreview({
     super.key,
-    required this.squad,
+    required this.slots,
     required this.formation,
     this.height = 300,
+    this.onSlotTap,
   });
 
-  final List<Player> squad;
+  /// The resolved eleven, slot by slot, in [kFormationLayouts] order.
+  final List<FormationSlot> slots;
   final Formation formation;
 
   /// Fixed height rather than an aspect ratio: on a 360 dp phone an
   /// aspect-driven box was ~420 dp tall and pushed the tabs off-screen.
   final double height;
+
+  /// Called with the slot index when a token is tapped; the tactics screen
+  /// opens the picker for that slot.
+  final void Function(int index)? onSlotTap;
 
   /// Width of the marker + name column.
   static const double _tokenWidth = 70;
@@ -637,7 +775,6 @@ class PitchPreview extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final layout = kFormationLayouts[formation] ?? const <PitchPosition>[];
-    final slots = formationPreview(squad, formation);
 
     return ClipRRect(
       borderRadius: BorderRadius.circular(18),
@@ -667,10 +804,17 @@ class PitchPreview extends StatelessWidget {
                       left: minX + layout[i].x * spanX - _tokenWidth / 2,
                       top: minY + layout[i].y * spanY - _marker / 2,
                       width: _tokenWidth,
-                      child: _PitchToken(
-                        slot: slots[i],
-                        layout: layout[i],
-                        size: _marker,
+                      child: GestureDetector(
+                        key: ValueKey('pitch-slot-$i'),
+                        behavior: HitTestBehavior.opaque,
+                        onTap: onSlotTap == null ? null : () => onSlotTap!(i),
+                        child: _PitchToken(
+                          slot: i < slots.length
+                              ? slots[i]
+                              : FormationSlot(position: layout[i].position),
+                          layout: layout[i],
+                          size: _marker,
+                        ),
                       ),
                     ),
                 ],
@@ -694,10 +838,20 @@ class _PitchToken extends StatelessWidget {
   final PitchPosition layout;
   final double size;
 
+  /// Amber for a pick who lost his place to a fit team-mate, a bold ring for
+  /// a pick who is playing, and the quiet default for automatic picks.
+  static const _amber = Color(0xFFFFB300);
+
   @override
   Widget build(BuildContext context) {
     final player = slot.player;
     final empty = player == null;
+    final replaced = slot.replaced;
+    final borderColor = replaced
+        ? _amber
+        : slot.manual
+            ? Colors.white
+            : (empty ? Colors.white38 : Colors.white70);
     return Column(
       mainAxisSize: MainAxisSize.min,
       children: [
@@ -708,8 +862,8 @@ class _PitchToken extends StatelessWidget {
             color: Colors.black.withValues(alpha: empty ? 0.28 : 0.62),
             shape: BoxShape.circle,
             border: Border.all(
-              color: empty ? Colors.white38 : Colors.white70,
-              width: 1.4,
+              color: borderColor,
+              width: (slot.manual || replaced) ? 2.2 : 1.4,
             ),
             boxShadow: empty
                 ? null
@@ -725,7 +879,7 @@ class _PitchToken extends StatelessWidget {
           child: Text(
             empty ? layout.position : '${player.ovr}',
             style: TextStyle(
-              color: Colors.white,
+              color: replaced ? _amber : Colors.white,
               fontSize: empty ? 8.5 : 12.5,
               fontWeight: FontWeight.w700,
             ),
@@ -840,11 +994,15 @@ class _PlayerCard extends StatelessWidget {
     required this.player,
     required this.onTap,
     this.status,
+    this.tag,
   });
 
   final Player player;
   final VoidCallback onTap;
   final String? status;
+
+  /// Where the player sits in the matchday plans ("XI", "SUB"), if anywhere.
+  final String? tag;
 
   /// The one-line story of the player right now: an injury and its expected
   /// return beat the squad role, because it changes what the manager can do.
@@ -872,24 +1030,13 @@ class _PlayerCard extends StatelessWidget {
         subtitle: Row(
           children: [
             PositionChip(position: player.primaryPosition),
+            if (tag != null) ...[
+              const SizedBox(width: 6),
+              SelectionTag(label: tag!),
+            ],
             if (player.isInjured) ...[
               const SizedBox(width: 6),
-              Container(
-                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 3),
-                decoration: BoxDecoration(
-                  color: const Color(0xFFEF5350).withValues(alpha: 0.16),
-                  borderRadius: BorderRadius.circular(8),
-                ),
-                child: const Text(
-                  'INJ',
-                  style: TextStyle(
-                    fontSize: 10,
-                    fontWeight: FontWeight.w800,
-                    letterSpacing: 0.4,
-                    color: Color(0xFFEF5350),
-                  ),
-                ),
-              ),
+              const InjuryChip(),
             ],
             const SizedBox(width: 8),
             Flexible(

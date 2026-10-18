@@ -57,7 +57,9 @@ class CareerSession {
   final SeasonState season;
   Tactic tactic;
 
-  /// Player ids of the manager's chosen starting XI (tactics screen).
+  /// The manager's stored starting picks, sparse and slot-indexed against the
+  /// current formation's `kFormationLayouts` order (0 = the assistant picks
+  /// that slot, empty = a fully automatic XI). Carried in the save blob.
   List<int> startXI;
 
   /// The user's club results this season (last 10), used for the form guide.

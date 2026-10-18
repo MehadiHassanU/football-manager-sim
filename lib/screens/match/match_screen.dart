@@ -167,8 +167,14 @@ class _MatchScreenState extends ConsumerState<MatchScreen> {
         throw const _MatchValidationException(
             'Your squad is empty. Sign or promote players before kick off.');
       }
-      final userSquad =
-          _startingXi(session.team.squad, session.tactic.formation);
+      // The manager's stored picks (if any) shape his XI; everything else the
+      // assistant fills in. The opponent is always the assistant's pick.
+      final lineup = resolveMatchLineup(
+        session.team.squad,
+        session.tactic.formation,
+        session.startXI,
+      );
+      final userSquad = lineup.outfield;
       if (userSquad.isEmpty) {
         throw const _MatchValidationException(
             'Your starting XI is incomplete. Check your squad.');
@@ -178,7 +184,8 @@ class _MatchScreenState extends ConsumerState<MatchScreen> {
         throw _MatchValidationException(
             '${opponent.name} has no available players for this match.');
       }
-      final userGk = _pickGoalkeeper(session.team.squad) ??
+      final userGk = lineup.goalkeeper ??
+          _pickGoalkeeper(session.team.squad) ??
           _fallbackGoalkeeper(session.team.name);
       final oppGk =
           _pickGoalkeeper(opponent.squad) ?? _fallbackGoalkeeper(opponent.name);

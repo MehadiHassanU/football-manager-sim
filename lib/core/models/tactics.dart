@@ -102,12 +102,26 @@ class Tactic {
 @immutable
 class FormationSlot {
   final String position;
+
+  /// The stored manual pick for this slot, or null when the assistant picks.
   final int? playerId;
+
+  /// Who will actually play here once availability is taken into account.
   final Player? player;
 
   const FormationSlot({required this.position, this.playerId, this.player});
 
   bool get isEmpty => player == null;
+
+  /// Whether the manager stored a pick for this slot.
+  bool get manual => playerId != null;
+
+  /// True when a stored pick exists but somebody else will play here — he is
+  /// injured or out of shape and a fit alternative took over.
+  bool get replaced {
+    final current = player;
+    return playerId != null && (current == null || current.id != playerId);
+  }
 }
 
 /// One place on the pitch: the position it is for and where it sits, as a
@@ -204,26 +218,63 @@ bool canFillSlot(Player player, String slot) =>
     (kPositionAffinity[player.primaryPosition] ?? const <String>[])
         .contains(slot);
 
-/// Picks the starting XI for [formation] from [squad].
+/// Builds the starting slots for [formation] from [squad], honouring the
+/// manager's stored picks in [manualIds].
 ///
-/// Slots are filled greedily in formation order with the best available player
-/// who can fill them; any slot still empty is back-filled with the strongest
-/// remaining squad member, because an incomplete XI would be worse than a
-/// mis-placed one. [minFitness] mirrors the match screen: players below the
-/// threshold are skipped when a fit alternative exists. Players in the
-/// treatment room slide down the pecking order the same way — an injured
-/// regular only takes the field when nobody fit can stand in for him.
-List<Player> selectStartingEleven(
+/// [manualIds] is sparse and slot-indexed: index 0 is the goalkeeper, and the
+/// index order matches [kFormationLayouts]. A value of `0` means "the
+/// assistant picks this slot". An empty list is the entirely automatic XI.
+///
+/// Slots without a stored pick are filled greedily in formation order with the
+/// best available player who can fill them; any slot still empty is back-filled
+/// with the strongest remaining squad member, because an incomplete XI would be
+/// worse than a mis-placed one. [minFitness] mirrors the match screen: players
+/// below the threshold are skipped when a fit alternative exists. Players in
+/// the treatment room slide down the pecking order the same way — a stored pick
+/// who is injured or out of shape only takes the field when nobody fit can
+/// stand in for him, and the slot reports [FormationSlot.replaced] until then.
+List<FormationSlot> resolveFormationSlots(
   List<Player> squad,
-  Formation formation, {
+  Formation formation,
+  List<int> manualIds, {
   double minFitness = 45,
 }) {
+  final layout = kFormationLayouts[formation] ?? const <PitchPosition>[];
   final fit = squad.where((p) => p.fitness > minFitness).toList();
-  final pool = fit.isNotEmpty ? fit : [...squad];
-  final remaining = [...pool];
-  final picked = <Player>[];
+  final fitEmpty = fit.isEmpty;
+  final pool = fitEmpty ? [...squad] : fit;
+  final byId = {for (final p in squad) p.id: p};
 
-  void takeBest(bool Function(Player) ok) {
+  final picked = List<Player?>.filled(layout.length, null);
+  final stored = List<int?>.filled(layout.length, null);
+  final lastResort = <int, Player>{};
+  final used = <int>{};
+
+  // First pass: seat the manager's picks.
+  for (var i = 0; i < layout.length && i < manualIds.length; i++) {
+    final id = manualIds[i];
+    if (id <= 0) continue;
+    final player = byId[id];
+    if (player == null) continue; // he left the club: back to the assistant
+    stored[i] = id;
+    final available = !player.isInjured && (fitEmpty || player.fitness > minFitness);
+    if (available && used.add(player.id)) {
+      picked[i] = player;
+    } else {
+      lastResort[i] = player;
+    }
+  }
+
+  // The assistant fills the rest. A pick who is out of action is kept out of
+  // the general pool: he only ever plays his own slot, and only as a last
+  // resort.
+  final deferred = {for (final p in lastResort.values) p.id};
+  final remaining = [
+    for (final p in pool)
+      if (!used.contains(p.id) && !deferred.contains(p.id)) p,
+  ];
+
+  void takeBest(int slotIndex, bool Function(Player) ok) {
     remaining.sort((a, b) {
       // Fit bodies first: the injured are only picked when the alternative
       // would be to leave the slot empty.
@@ -232,33 +283,69 @@ List<Player> selectStartingEleven(
     });
     final index = remaining.indexWhere(ok);
     if (index < 0) return;
-    picked.add(remaining.removeAt(index));
+    final player = remaining.removeAt(index);
+    used.add(player.id);
+    picked[slotIndex] = player;
   }
 
-  for (final slot in kFormationLayouts[formation] ?? const <PitchPosition>[]) {
-    takeBest((p) => canFillSlot(p, slot.position));
+  for (var i = 0; i < layout.length; i++) {
+    if (picked[i] != null) continue;
+    final position = layout[i].position;
+    takeBest(i, (p) => canFillSlot(p, position));
   }
   // Back-fill anything the formation could not fill from real positions.
-  while (picked.length < kFormationLayouts[formation]!.length &&
-      remaining.isNotEmpty) {
-    takeBest((_) => true);
+  for (var i = 0; i < layout.length; i++) {
+    if (picked[i] != null) continue;
+    takeBest(i, (_) => true);
   }
-  return picked;
-}
+  // A stored pick who is out of action still plays when nobody fit could take
+  // his slot — the same last word as the assistant's pecking order.
+  for (final entry in lastResort.entries) {
+    if (picked[entry.key] == null && used.add(entry.value.id)) {
+      picked[entry.key] = entry.value;
+    }
+  }
 
-/// The eleven players [formation] would start, paired with their slot, for
-/// the pitch preview. Slots with no player come back with a null player.
-List<FormationSlot> formationPreview(List<Player> squad, Formation formation) {
-  final xi = selectStartingEleven(squad, formation);
-  final layout = kFormationLayouts[formation] ?? const <PitchPosition>[];
   return [
     for (var i = 0; i < layout.length; i++)
       FormationSlot(
         position: layout[i].position,
-        player: i < xi.length ? xi[i] : null,
+        playerId: stored[i],
+        player: picked[i],
       ),
   ];
 }
+
+/// The eleven players [formation] would start, in slot order, honouring the
+/// manager's stored picks in [manualIds] (empty = assistant's pick).
+List<Player> resolveStartingEleven(
+  List<Player> squad,
+  Formation formation,
+  List<int> manualIds, {
+  double minFitness = 45,
+}) {
+  final slots =
+      resolveFormationSlots(squad, formation, manualIds, minFitness: minFitness);
+  return [
+    for (final slot in slots)
+      if (slot.player != null) slot.player!,
+  ];
+}
+
+/// Picks the starting XI for [formation] from [squad]. See
+/// [resolveFormationSlots] for the full rules; this is the all-automatic
+/// entry point.
+List<Player> selectStartingEleven(
+  List<Player> squad,
+  Formation formation, {
+  double minFitness = 45,
+}) =>
+    resolveStartingEleven(squad, formation, const [], minFitness: minFitness);
+
+/// The eleven players [formation] would start, paired with their slot, for
+/// the pitch preview. Slots with no player come back with a null player.
+List<FormationSlot> formationPreview(List<Player> squad, Formation formation) =>
+    resolveFormationSlots(squad, formation, const []);
 
 /// The out-field players of the starting XI (the goalkeeper is tracked
 /// separately by the match engine).
@@ -266,6 +353,92 @@ List<Player> startingOutfield(List<Player> squad, Formation formation) =>
     selectStartingEleven(squad, formation)
         .where((p) => p.primaryPosition != 'GK')
         .toList();
+
+/// Splits the resolved starting XI into the parts the match engine wants:
+/// the keeper (when the formation could place one) and the out-field ten,
+/// honouring the manager's stored picks in [manualIds].
+///
+/// When the squad has no keeper at all, the player standing in the goal slot
+/// is no keeper by trade: the match screen brings a synthetic keeper on
+/// instead, so he is handed back with the out-field players.
+({Player? goalkeeper, List<Player> outfield}) resolveMatchLineup(
+  List<Player> squad,
+  Formation formation,
+  List<int> manualIds, {
+  double minFitness = 45,
+}) {
+  final slots =
+      resolveFormationSlots(squad, formation, manualIds, minFitness: minFitness);
+  final keeperSlot = slots.isEmpty ? null : slots.first.player;
+  final goalkeeper =
+      keeperSlot != null && keeperSlot.primaryPosition == 'GK' ? keeperSlot : null;
+  final outfield = [
+    for (var i = 1; i < slots.length; i++)
+      if (slots[i].player != null) slots[i].player!,
+    if (goalkeeper == null && keeperSlot != null) keeperSlot,
+  ];
+  return (
+    goalkeeper: goalkeeper,
+    outfield: [
+      for (final p in outfield)
+        if (p.primaryPosition != 'GK') p,
+    ],
+  );
+}
+
+/// Re-seats the stored picks after a formation change from [from] to [to].
+///
+/// A pick keeps his slot when the new shape asks for a position he can fill;
+/// otherwise he is moved to the first empty slot he suits, and a pick with no
+/// home anywhere in the new shape goes back to the assistant. Picks that have
+/// left the club are dropped. Returns the new sparse, slot-indexed list.
+List<int> reconcileXiPicks(
+  List<int> manualIds,
+  Formation from,
+  Formation to,
+  List<Player> squad,
+) {
+  final oldLayout = kFormationLayouts[from] ?? const <PitchPosition>[];
+  final newLayout = kFormationLayouts[to] ?? const <PitchPosition>[];
+  if (manualIds.isEmpty || newLayout.isEmpty) return const [];
+
+  final byId = {for (final p in squad) p.id: p};
+  final picks = <(int, Player)>[];
+  for (var i = 0; i < oldLayout.length && i < manualIds.length; i++) {
+    final id = manualIds[i];
+    if (id <= 0) continue;
+    final player = byId[id];
+    if (player == null) continue; // already gone: no pick to carry over
+    picks.add((i, player));
+  }
+
+  final result = List<int>.generate(newLayout.length, (_) => 0, growable: true);
+  final placed = <int>{};
+
+  // Same index, compatible position: keep him where he is.
+  for (final (oldIndex, player) in picks) {
+    if (oldIndex >= newLayout.length) continue;
+    if (!canFillSlot(player, newLayout[oldIndex].position)) continue;
+    if (!placed.add(player.id)) continue;
+    result[oldIndex] = player.id;
+  }
+  // Relocate the rest to any empty slot they suit.
+  for (final (_, player) in picks) {
+    if (placed.contains(player.id)) continue;
+    for (var j = 0; j < newLayout.length; j++) {
+      if (result[j] != 0) continue;
+      if (!canFillSlot(player, newLayout[j].position)) continue;
+      result[j] = player.id;
+      placed.add(player.id);
+      break;
+    }
+  }
+
+  while (result.isNotEmpty && result.last == 0) {
+    result.removeLast();
+  }
+  return result;
+}
 
 T _enumByName<T extends Enum>(List<T> values, String? name, T fallback) {
   for (final v in values) {

@@ -3,6 +3,7 @@ import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:football_manager_sim/core/constants/tactic_definitions.dart';
+import 'package:football_manager_sim/core/models/tactics.dart';
 import 'package:football_manager_sim/screens/team_management/team_management_screen.dart';
 import 'package:football_manager_sim/ui/ui.dart';
 
@@ -24,7 +25,7 @@ void main() {
             child: SizedBox(
               width: 328,
               child: PitchPreview(
-                squad: squad,
+                slots: formationPreview(squad, Formation.fourFourTwo),
                 formation: Formation.fourFourTwo,
                 height: 300,
               ),

@@ -74,6 +74,63 @@ class PositionChip extends StatelessWidget {
   }
 }
 
+/// The red "INJ" flag that says a player is in the treatment room.
+class InjuryChip extends StatelessWidget {
+  const InjuryChip({super.key});
+
+  static const _red = Color(0xFFEF5350);
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 3),
+      decoration: BoxDecoration(
+        color: _red.withValues(alpha: 0.16),
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: const Text(
+        'INJ',
+        style: TextStyle(
+          fontSize: 10,
+          fontWeight: FontWeight.w800,
+          letterSpacing: 0.4,
+          color: _red,
+        ),
+      ),
+    );
+  }
+}
+
+/// Tiny tag saying where a player currently sits in the matchday plans
+/// ("XI · LM", "SUB"). [color] defaults to the theme's primary color.
+class SelectionTag extends StatelessWidget {
+  const SelectionTag({super.key, required this.label, this.color});
+
+  final String label;
+  final Color? color;
+
+  @override
+  Widget build(BuildContext context) {
+    final tint = color ?? Theme.of(context).colorScheme.primary;
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 3),
+      decoration: BoxDecoration(
+        color: tint.withValues(alpha: 0.14),
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Text(
+        label,
+        style: TextStyle(
+          fontSize: 10,
+          fontWeight: FontWeight.w800,
+          letterSpacing: 0.4,
+          color: tint,
+        ),
+      ),
+    );
+  }
+}
+
 /// Circular avatar with the player's initials.
 class PlayerAvatar extends StatelessWidget {
   const PlayerAvatar({super.key, required this.player, this.radius = 18});
