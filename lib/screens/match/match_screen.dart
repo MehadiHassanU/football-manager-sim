@@ -116,6 +116,9 @@ class _MatchScreenState extends ConsumerState<MatchScreen> {
   int _eventsShown = 0;
   String? _errorMessage;
 
+  /// The penalties verdict for a drawn cup tie, shown on the full-time screen.
+  ({String text, bool advanced})? _shootout;
+
   /// Guards against applying the match result twice (ticker completion and
   /// Skip both funnel into [_finishMatch]).
   bool _resultApplied = false;
@@ -342,6 +345,9 @@ class _MatchScreenState extends ConsumerState<MatchScreen> {
     final session = ref.read(careerSessionProvider);
     BoardVerdict? verdict;
     if (session != null) {
+      // The shootout outcome is carved in the tie's seed, so it is knowable
+      // the moment the whistle goes — before the result is applied.
+      _shootout = _shootoutNoteFor(session, _result!);
       verdict = applyMatchResult(ref, _result!);
       ref.read(lastMatchResultProvider.notifier).state = _result;
       ref.read(currentMatchProvider.notifier).state = _result;
@@ -432,7 +438,7 @@ class _MatchScreenState extends ConsumerState<MatchScreen> {
           starting: _phase == _MatchPhase.starting,
         ),
       _MatchPhase.live || _MatchPhase.halfTime => _liveMatch(),
-      _MatchPhase.fullTime => _FullTime(result: _result!),
+      _MatchPhase.fullTime => _FullTime(result: _result!, shootout: _shootout),
       _MatchPhase.error => _MatchError(
           message: _errorMessage ?? 'Something went wrong.',
           onRetry: _startMatch,
@@ -958,9 +964,12 @@ class _HalfTimeSheet extends StatelessWidget {
 }
 
 class _FullTime extends StatelessWidget {
-  const _FullTime({required this.result});
+  const _FullTime({required this.result, this.shootout});
 
   final MatchResult result;
+
+  /// The penalties verdict for a drawn cup tie, when the match was one.
+  final ({String text, bool advanced})? shootout;
 
   @override
   Widget build(BuildContext context) {
@@ -988,6 +997,29 @@ class _FullTime extends StatelessWidget {
                 style: theme.textTheme.titleLarge, textAlign: TextAlign.center),
             const SizedBox(height: 4),
             Text(result.fullTimeCommentary, style: theme.textTheme.bodySmall),
+            if (shootout != null) ...[
+              const SizedBox(height: 10),
+              Container(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                decoration: BoxDecoration(
+                  color: (shootout!.advanced
+                          ? AppTheme.pitchGreen
+                          : const Color(0xFFEF5350))
+                      .withValues(alpha: 0.14),
+                  borderRadius: BorderRadius.circular(10),
+                ),
+                child: Text(
+                  shootout!.text,
+                  style: theme.textTheme.labelLarge?.copyWith(
+                    fontWeight: FontWeight.w800,
+                    color: shootout!.advanced
+                        ? AppTheme.pitchGreen
+                        : const Color(0xFFEF5350),
+                  ),
+                ),
+              ),
+            ],
             const Divider(height: 32),
             Padding(
               padding: const EdgeInsets.symmetric(horizontal: 16),
@@ -1077,6 +1109,23 @@ String? _cupTieLabel(CareerSession session) {
   if (fixture == null || fixture.competition != 'cup') return null;
   final cupRound = CupService.cupRoundIndexOf(season, season.currentMatchday);
   return 'Cup · ${CupService.roundNameOf(season, cupRound)}';
+}
+
+/// The penalties verdict for the tie the manager just played, or null when
+/// the match was a league game or was settled in normal time.
+({String text, bool advanced})? _shootoutNoteFor(
+  CareerSession session,
+  MatchResult result,
+) {
+  final fixture = session.season.currentFixtureFor(session.team.id);
+  if (fixture == null) return null;
+  return CupService.shootoutNote(
+    season: session.season,
+    tie: fixture,
+    teamId: session.team.id,
+    homeGoals: result.homeGoals,
+    awayGoals: result.awayGoals,
+  );
 }
 
 /// The out-field players that start, picked for the manager's chosen

@@ -258,4 +258,84 @@ void main() {
     }
     expect(pairingsOf(a), isNot(pairingsOf(b)));
   });
+
+  group('shootouts told to the manager', () {
+    test('tieWinner answers the same way every time, and follows a decision',
+        () {
+      final season = _eightClubSeason();
+      final fixture = season.rounds[season.cup!.anchors[0]].first;
+
+      // Unplayed tie, so the seeded coin decides — deterministically.
+      final winner = CupService.tieWinner(season, fixture);
+      expect([fixture.homeTeamId, fixture.awayTeamId], contains(winner));
+      expect(CupService.tieWinner(season, fixture), winner);
+
+      // A tie decided in normal time follows the score, not the coin.
+      fixture.record(2, 0);
+      expect(CupService.tieWinner(season, fixture), fixture.homeTeamId);
+    });
+
+    test('the note matches what the bracket actually does', () {
+      final season = _eightClubSeason();
+      final fixture = season.rounds[season.cup!.anchors[0]].first;
+      final home = fixture.homeTeamId;
+      final away = fixture.awayTeamId;
+
+      final homeNote = CupService.shootoutNote(
+        season: season,
+        tie: fixture,
+        teamId: home,
+        homeGoals: 1,
+        awayGoals: 1,
+      );
+      final awayNote = CupService.shootoutNote(
+        season: season,
+        tie: fixture,
+        teamId: away,
+        homeGoals: 1,
+        awayGoals: 1,
+      );
+      expect(homeNote, isNotNull);
+      expect(awayNote, isNotNull);
+      // Exactly one of the two clubs is told it went through.
+      expect(homeNote!.advanced != awayNote!.advanced, isTrue);
+
+      // The rest of the round draws too: the bracket only moves when the
+      // whole round is in.
+      _recordRound(season, season.rounds[season.cup!.anchors[0]], 1, 1);
+      final survivors =
+          _participantsOf(season.rounds[season.cup!.anchors[1]]);
+      expect(survivors.contains(home), homeNote.advanced,
+          reason: 'the note and the bracket must tell one story');
+      expect(survivors.contains(away), awayNote.advanced);
+    });
+
+    test('league games and normal-time cup results get no shootout line', () {
+      final season = _eightClubSeason();
+      final league = season.rounds[0].first;
+      expect(
+        CupService.shootoutNote(
+          season: season,
+          tie: league,
+          teamId: league.homeTeamId,
+          homeGoals: 1,
+          awayGoals: 1,
+        ),
+        isNull,
+      );
+
+      final cupTie = season.rounds[season.cup!.anchors[0]].first;
+      expect(
+        CupService.shootoutNote(
+          season: season,
+          tie: cupTie,
+          teamId: cupTie.homeTeamId,
+          homeGoals: 2,
+          awayGoals: 0,
+        ),
+        isNull,
+        reason: 'a win in normal time needs no penalties line',
+      );
+    });
+  });
 }

@@ -83,7 +83,7 @@ class CupService {
         continue;
       }
       final contenders = [
-        for (final f in round) _winnerOf(season, f),
+        for (final f in round) tieWinner(season, f),
         if (cup.byes[k] != null) cup.byes[k]!,
       ];
       season.rounds[cup.anchors[k + 1]] = _drawRound(contenders, cup, k + 1,
@@ -105,7 +105,7 @@ class CupService {
     final finalRound = season.rounds[cup.anchors.last];
     if (finalRound.isEmpty) return null;
     if (finalRound.any((f) => !f.played)) return null;
-    final matchWinner = _winnerOf(season, finalRound.single);
+    final matchWinner = tieWinner(season, finalRound.single);
     final bye = cup.byes[cup.anchors.length - 1];
     if (bye == null) return matchWinner;
     final seed =
@@ -155,7 +155,7 @@ class CupService {
       if (!attended) continue; // not yet entered, or already knocked out
       if (round.any((f) => !f.played)) return true; // tie still to be played
       final winner =
-          _winnerOf(season, round.firstWhere((f) => f.involves(teamId)));
+          tieWinner(season, round.firstWhere((f) => f.involves(teamId)));
       if (winner != teamId) return false; // knocked out right here
     }
     // Walked the whole bracket: the cup is decided, so nobody is "alive".
@@ -224,8 +224,10 @@ class CupService {
   }
 
   /// The team that goes through a played tie. Draws go to seeded penalties,
-  /// so the outcome is deterministic across restores.
-  static String _winnerOf(SeasonState season, Fixture fixture) {
+  /// so the outcome is deterministic across restores — and it is the single
+  /// source of truth the bracket, the board news and the full-time screen all
+  /// read, so they can never tell the manager different stories.
+  static String tieWinner(SeasonState season, Fixture fixture) {
     if (fixture.homeGoals != fixture.awayGoals) {
       return fixture.homeGoals > fixture.awayGoals
           ? fixture.homeTeamId
@@ -237,6 +239,22 @@ class CupService {
             .hashCode
             .abs();
     return Random(seed).nextBool() ? fixture.homeTeamId : fixture.awayTeamId;
+  }
+
+  /// The shootout line for a finished drawn cup tie, from [teamId]'s point of
+  /// view — or null when the tie needs no deciding (a league fixture, or
+  /// somebody won it in normal time).
+  static ({String text, bool advanced})? shootoutNote({
+    required SeasonState season,
+    required Fixture tie,
+    required String teamId,
+    required int homeGoals,
+    required int awayGoals,
+  }) {
+    if (tie.competition != 'cup' || homeGoals != awayGoals) return null;
+    return tieWinner(season, tie) == teamId
+        ? (text: 'Through on penalties', advanced: true)
+        : (text: 'Knocked out on penalties', advanced: false);
   }
 
   static String _nameForMatches(int matches) {

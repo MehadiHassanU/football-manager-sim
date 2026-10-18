@@ -201,6 +201,48 @@ void main() {
     expect(updated.boardNote, contains('Out of the National Cup'));
   });
 
+  testWidgets('a drawn cup tie tells the manager which way the shootout went',
+      (tester) async {
+    final (db, session) = _cupScenario();
+    final user = db.teams.first;
+    final cup = session.season.cup!;
+    final container = await _containerFor(db, session);
+
+    final fixture =
+        session.season.userFixtureForRound(cup.anchors[0], user.id)!;
+    // The verdict the full-time screen resolves before the result lands —
+    // the same call order match_screen uses.
+    final note = CupService.shootoutNote(
+      season: session.season,
+      tie: fixture,
+      teamId: user.id,
+      homeGoals: 1,
+      awayGoals: 1,
+    );
+    expect(note, isNotNull, reason: 'a drawn cup tie always needs a verdict');
+
+    await _run(
+      tester,
+      container,
+      (ref) => applyMatchResult(
+        ref,
+        _scoreFor(fixture, db, homeGoals: 1, awayGoals: 1),
+      ),
+    );
+
+    final updated = container.read(careerSessionProvider)!;
+    // The bracket must back the note up: through iff the note says through.
+    final second = updated.season.rounds[cup.anchors[1]];
+    expect(second.any((f) => f.involves(user.id) && !f.played), note!.advanced,
+        reason: 'the shootout note and the bracket disagreed');
+    if (note.advanced) {
+      expect(CupService.clubIsAlive(updated.season, user.id), isTrue);
+    } else {
+      expect(CupService.clubIsAlive(updated.season, user.id), isFalse);
+      expect(updated.boardNote, contains('Out of the National Cup'));
+    }
+  });
+
   testWidgets('a club that wins every tie lifts the cup and stops losing '
       'board patience', (tester) async {
     final (db, session) = _cupScenario(startMatchday: 0);
