@@ -41,7 +41,10 @@ class PlayerRating {
   /// keys on this. Null only on hand-built ratings in tests.
   final int? playerId;
   final String position;
-  final int rating;
+
+  /// One decimal in the 1.0-10.0 band real match ratings use (7.4, not 7):
+  /// integer ratings flattened every performance into ten buckets.
+  final double rating;
   final int goals;
   final int assists;
   final int minutes;

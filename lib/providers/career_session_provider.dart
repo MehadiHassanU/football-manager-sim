@@ -716,6 +716,10 @@ void _recordAppearances(
     player.gamesPlayed += 1;
     player.minutesPlayed += rating.minutes;
     player.matchRating = rating.rating;
+    // Season tallies, folded straight from the rating sheet so a cup match
+    // and a league match count the same.
+    player.goals += rating.goals;
+    player.assists += rating.assists;
     // Form is the rolling match rating; morale drifts with how he played, and
     // a bad individual display hurts regardless of the result.
     player.form = ((player.form * 2 + rating.rating) / 3).round().clamp(1, 10);
@@ -2179,6 +2183,13 @@ SeasonOutcome? rollIntoNextSeason(WidgetRef ref) {
   team.goalsFor = 0;
   team.goalsAgainst = 0;
   team.leaguePosition = 10;
+
+  // Goals and assists are season tallies, like the table's; the new campaign
+  // starts from zero while appearances and minutes stay career totals.
+  for (final player in team.squad) {
+    player.goals = 0;
+    player.assists = 0;
+  }
 
   final db = ref.read(playerDatabaseProvider).valueOrNull;
   final rivals = db == null

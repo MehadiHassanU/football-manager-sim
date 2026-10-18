@@ -256,4 +256,68 @@ void main() {
       expect(after.season.records[id]!.played, greaterThan(0), reason: id);
     }
   });
+
+  testWidgets('goals and assists fold into the squad season totals',
+      (tester) async {
+    final db = stubLeagueDatabase(clubCount);
+    final ids = [for (final t in db.teams) t.id];
+    final rounds = buildRounds(ids, rng: Random(1));
+    final homeRound = [
+      for (var r = 0; r < rounds.length; r++)
+        if (rounds[r].any((f) => f.homeTeamId == ids.first)) r,
+    ].first;
+
+    final session = _sessionFor(db, clubCount, homeRound);
+    final container = _containerFor(db, session);
+    final fixture = session.season.currentFixtureFor(session.team.id)!;
+    expect(fixture.isHomeFor(session.team.id), isTrue);
+
+    final striker =
+        session.team.squad.firstWhere((p) => p.primaryPosition == 'ST');
+    expect(striker.goals, 0);
+    expect(striker.assists, 0);
+
+    final home = db.teams.firstWhere((t) => t.id == fixture.homeTeamId);
+    final away = db.teams.firstWhere((t) => t.id == fixture.awayTeamId);
+
+    await tester.pumpWidget(
+      UncontrolledProviderScope(
+        container: container,
+        child: MaterialApp(
+          home: Scaffold(
+            body: _ApplyResult(MatchResult(
+              homeTeam: home.name,
+              awayTeam: away.name,
+              homeGoals: 2,
+              awayGoals: 1,
+              events: const [],
+              homeRatings: [
+                PlayerRating(
+                  playerName: striker.name,
+                  playerId: striker.id,
+                  position: 'ST',
+                  rating: 7.6,
+                  goals: 2,
+                  assists: 1,
+                  minutes: 90,
+                  started: true,
+                ),
+              ],
+              homeMomentum: const [],
+              awayMomentum: const [],
+              fullTimeCommentary: '',
+            )),
+          ),
+        ),
+      ),
+    );
+    await tester.tap(find.text('apply'));
+    await tester.pump();
+
+    expect(striker.goals, 2, reason: 'both goals must be credited');
+    expect(striker.assists, 1);
+    expect(striker.gamesPlayed, 1);
+    // The decimal rating reaches the squad without being rounded away.
+    expect(striker.matchRating, 7.6);
+  });
 }

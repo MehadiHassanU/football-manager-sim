@@ -89,6 +89,21 @@ List<MatchEvent> applyCommentarySettings(
       away: userIsHome ? null : userTactic,
     );
 
+/// The full-time verdict from the user's point of view.
+///
+/// Reading the home score line directly made every away win display as
+/// "Defeat" even though the board booked it as a win, so the verdict has to
+/// be derived from the user's goals — never from [MatchResult.homeGoals].
+String fullTimeOutcome({
+  required MatchResult result,
+  required bool userIsHome,
+}) {
+  final userGoals = userIsHome ? result.homeGoals : result.awayGoals;
+  final oppGoals = userIsHome ? result.awayGoals : result.homeGoals;
+  if (userGoals == oppGoals) return 'Draw';
+  return userGoals > oppGoals ? 'Victory' : 'Defeat';
+}
+
 class MatchScreen extends ConsumerStatefulWidget {
   const MatchScreen({super.key});
 
@@ -112,6 +127,10 @@ class _MatchScreenState extends ConsumerState<MatchScreen> {
   _MatchPhase _phase = _MatchPhase.pre;
   MatchResult? _result;
   int _currentMinute = 0;
+
+  /// Which end the user's club played: the full-time verdict is computed from
+  /// his side, not from the home score line.
+  bool _userIsHome = true;
   Timer? _ticker;
   int _eventsShown = 0;
   String? _errorMessage;
@@ -284,6 +303,7 @@ class _MatchScreenState extends ConsumerState<MatchScreen> {
       if (!mounted) return;
       setState(() {
         _result = labeled;
+        _userIsHome = userIsHome;
         _resultApplied = false;
         _phase = _MatchPhase.live;
         _currentMinute = 0;
@@ -438,7 +458,8 @@ class _MatchScreenState extends ConsumerState<MatchScreen> {
           starting: _phase == _MatchPhase.starting,
         ),
       _MatchPhase.live || _MatchPhase.halfTime => _liveMatch(),
-      _MatchPhase.fullTime => _FullTime(result: _result!, shootout: _shootout),
+      _MatchPhase.fullTime => _FullTime(
+          result: _result!, shootout: _shootout, userIsHome: _userIsHome),
       _MatchPhase.error => _MatchError(
           message: _errorMessage ?? 'Something went wrong.',
           onRetry: _startMatch,
@@ -964,21 +985,21 @@ class _HalfTimeSheet extends StatelessWidget {
 }
 
 class _FullTime extends StatelessWidget {
-  const _FullTime({required this.result, this.shootout});
+  const _FullTime({required this.result, this.shootout, this.userIsHome = true});
 
   final MatchResult result;
 
   /// The penalties verdict for a drawn cup tie, when the match was one.
   final ({String text, bool advanced})? shootout;
 
+  /// True when the user's club was the home side. The verdict is read from
+  /// the user's goals, so an away win reads "Victory", not "Defeat".
+  final bool userIsHome;
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final outcome = result.homeGoals == result.awayGoals
-        ? 'Draw'
-        : result.homeGoals > result.awayGoals
-            ? 'Victory'
-            : 'Defeat';
+    final outcome = fullTimeOutcome(result: result, userIsHome: userIsHome);
 
     return Scaffold(
       appBar: AppBar(title: const Text('Full Time')),
@@ -1051,7 +1072,7 @@ class _FullTime extends StatelessWidget {
                                 size: 14, color: AppTheme.pitchGreen),
                           ),
                         Text(
-                          '${r.rating}',
+                          r.rating.toStringAsFixed(1),
                           style: theme.textTheme.bodyMedium
                               ?.copyWith(fontWeight: FontWeight.w800),
                         ),

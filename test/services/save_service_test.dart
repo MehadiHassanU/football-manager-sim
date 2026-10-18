@@ -98,6 +98,9 @@ void main() {
           playTraits: [],
           currentTeam: 'T',
           currentLeague: 'L',
+          matchRating: 7.4,
+          goals: 5,
+          assists: 3,
         ),
         Player(
           name: 'P2',
@@ -155,6 +158,11 @@ void main() {
       expect(loaded.length, 2);
       expect(loaded[0].name, 'P1');
       expect(loaded[1].id, 2);
+      // The decimal rating and the season tallies survive the Hive round trip;
+      // the rating slot used to be an int, so old saves must read back too.
+      expect(loaded[0].matchRating, 7.4);
+      expect(loaded[0].goals, 5);
+      expect(loaded[0].assists, 3);
     });
 
     test('saveTeam and loadTeam', () async {

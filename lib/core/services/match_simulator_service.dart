@@ -438,11 +438,14 @@ class MatchSimulatorService {
       if (goalDifference > 0) rating += 0.8;
       if (goalDifference < 0) rating -= 0.5;
       rating += scored * 1.2 + assisted * 0.5;
+      // Keep the tenth: a 7.4 and a 7.9 are different performances, and the
+      // old `.round()` threw that away before it ever reached the squad.
+      final stepped = (rating.clamp(1.0, 10.0) * 10).round() / 10;
       return PlayerRating(
         playerName: p.name,
         playerId: p.id,
         position: p.primaryPosition,
-        rating: rating.round().clamp(3, 10),
+        rating: stepped,
         goals: scored,
         assists: assisted,
         minutes: minutes,

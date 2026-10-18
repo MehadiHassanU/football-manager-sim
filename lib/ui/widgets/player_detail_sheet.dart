@@ -466,6 +466,11 @@ class _DevelopmentTab extends StatelessWidget {
                   'match rating ${player.matchRating.toStringAsFixed(1)}',
                   style: theme.textTheme.bodyMedium,
                 ),
+                const SizedBox(height: 4),
+                Text(
+                  '${player.goals} goals · ${player.assists} assists this season',
+                  style: theme.textTheme.bodyMedium,
+                ),
               ],
             ),
           ),

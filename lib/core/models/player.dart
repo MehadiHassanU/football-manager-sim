@@ -71,9 +71,15 @@ class Player {
   int fitness;
   int form;
   int morale;
-  int matchRating;
+
+  /// Last match rating, one decimal (7.4), matching [PlayerRating.rating].
+  double matchRating;
   int minutesPlayed;
   int gamesPlayed;
+
+  /// Season totals, folded from every match rating and reset at the rollover.
+  int goals;
+  int assists;
   bool isInjured;
   String? injuryType;
   DateTime? injuryReturnDate;
@@ -144,6 +150,8 @@ class Player {
     this.matchRating = 0,
     this.minutesPlayed = 0,
     this.gamesPlayed = 0,
+    this.goals = 0,
+    this.assists = 0,
     this.isInjured = false,
     this.weeklyWage = 0,
     this.transferValue = 0,
@@ -223,7 +231,8 @@ class Player {
     'currentLeague': currentLeague,
     'fitness': fitness, 'form': form, 'morale': morale,
     'matchRating': matchRating, 'minutesPlayed': minutesPlayed,
-    'gamesPlayed': gamesPlayed, 'isInjured': isInjured,
+    'gamesPlayed': gamesPlayed, 'goals': goals, 'assists': assists,
+    'isInjured': isInjured,
     'weeklyWage': weeklyWage, 'transferValue': transferValue,
     'requestedTransfer': requestedTransfer,
     'injuryType': injuryType,
@@ -267,9 +276,13 @@ class Player {
     currentTeam: json['currentTeam'],
     currentLeague: json['currentLeague'],
     fitness: json['fitness'], form: json['form'],
-    morale: json['morale'], matchRating: json['matchRating'],
+    morale: json['morale'],
+    // Older saves stored the match rating as an int; read either shape.
+    matchRating: (json['matchRating'] as num?)?.toDouble() ?? 0,
     minutesPlayed: json['minutesPlayed'],
     gamesPlayed: json['gamesPlayed'],
+    goals: (json['goals'] as num?)?.toInt() ?? 0,
+    assists: (json['assists'] as num?)?.toInt() ?? 0,
     isInjured: json['isInjured'],
     weeklyWage: json['weeklyWage'] ?? 0,
     transferValue: json['transferValue'],

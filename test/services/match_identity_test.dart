@@ -96,6 +96,24 @@ void main() {
     fail('no seed in 1..200 took exactly one J. Smith off before full time');
   });
 
+  test('ratings keep a tenth and stay inside the 1.0-10.0 band', () {
+    var sawFraction = false;
+    for (var seed = 1; seed <= 40; seed++) {
+      final result = _play(seed);
+      for (final rating in result.playerRatings) {
+        expect(rating.rating, greaterThanOrEqualTo(1.0));
+        expect(rating.rating, lessThanOrEqualTo(10.0));
+        // The stored value must be exactly a tenth, not raw double noise.
+        final tenths = rating.rating * 10;
+        expect((tenths - tenths.round()).abs() < 1e-6, isTrue,
+            reason: 'seed $seed: ${rating.rating} carries more than a tenth');
+        if (rating.rating != rating.rating.roundToDouble()) sawFraction = true;
+      }
+    }
+    expect(sawFraction, isTrue,
+        reason: 'every rating rounded to a whole number');
+  });
+
   test('injury events point at their player by id', () {
     var checked = 0;
     for (var seed = 1; seed <= 80 && checked == 0; seed++) {

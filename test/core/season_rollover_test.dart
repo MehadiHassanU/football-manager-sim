@@ -71,6 +71,11 @@ void main() {
       expect(session.season.isPostSeason, isTrue);
       expect(session.season.records[session.team.id]!.played, greaterThan(0));
 
+      // Season tallies to be wiped by the rollover.
+      final scorer = session.team.squad.first;
+      scorer.goals = 6;
+      scorer.assists = 4;
+
       final container = ProviderContainer(
         overrides: [
           playerDatabaseProvider.overrideWith((ref) async => db),
@@ -110,6 +115,10 @@ void main() {
       expect(after.team.goalsFor, 0);
       expect(after.team.wins, 0);
       expect(after.team.points, 0);
+      // Goals and assists are season tallies: the new campaign starts clean.
+      final rolled = after.team.squad.firstWhere((p) => p.id == scorer.id);
+      expect(rolled.goals, 0);
+      expect(rolled.assists, 0);
     });
 
     testWidgets('a club stays put when no neighbouring division exists',

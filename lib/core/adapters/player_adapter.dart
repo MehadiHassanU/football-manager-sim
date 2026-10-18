@@ -46,7 +46,9 @@ class PlayerAdapter implements TypeAdapter<Player> {
       playTraits: List<String>.from(fields[51] as List),
       currentTeam: fields[52] as String, currentLeague: fields[53] as String,
       fitness: fields[54] as int, form: fields[55] as int,
-      morale: fields[56] as int, matchRating: fields[57] as int,
+      morale: fields[56] as int,
+      // Was an int before the decimal-rating change: read either shape.
+      matchRating: (fields[57] as num).toDouble(),
       minutesPlayed: fields[58] as int, gamesPlayed: fields[59] as int,
       isInjured: fields[60] as bool,
       injuryType: fields[61] == null ? null : fields[61] as String,
@@ -55,13 +57,16 @@ class PlayerAdapter implements TypeAdapter<Player> {
       weeklyWage: fields[64] as double, transferValue: fields[65] as int,
       requestedTransfer: fields[66] as bool,
       hiddenAttributes: Map<String, dynamic>.from(fields[67] as Map),
+      // Added with the season-stats wave: absent on older saves.
+      goals: fields[68] as int? ?? 0,
+      assists: fields[69] as int? ?? 0,
     );
   }
 
   @override
   void write(BinaryWriter writer, Player obj) {
     writer
-      ..writeByte(68)
+      ..writeByte(70)
       ..writeByte(0)..write(obj.name)
       ..writeByte(1)..write(obj.id)
       ..writeByte(2)..write(obj.nationality)
@@ -129,6 +134,8 @@ class PlayerAdapter implements TypeAdapter<Player> {
       ..writeByte(64)..write(obj.weeklyWage)
       ..writeByte(65)..write(obj.transferValue)
       ..writeByte(66)..write(obj.requestedTransfer)
-      ..writeByte(67)..write(obj.hiddenAttributes);
+      ..writeByte(67)..write(obj.hiddenAttributes)
+      ..writeByte(68)..write(obj.goals)
+      ..writeByte(69)..write(obj.assists);
   }
 }
