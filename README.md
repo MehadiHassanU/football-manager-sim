@@ -1,16 +1,27 @@
-# Football Manager Simulation
+# Touchline Legend
 
-A hyper-realistic football manager simulation game built in Flutter with Riverpod state management, Hive local storage, and CSV-based player data.
+A hyper-realistic football manager simulation built in Flutter with Riverpod
+state management, Hive local storage, and CSV-based player data.
 
 ## Features
 
-- **Player Management** — Full stat tracking with 80+ attributes per player, injury/contract/wage systems, and transfer mechanics
-- **Match Simulation** — Auto-simulated matches with momentum, drama, and key event tracking
-- **Financial System** — FFP (Financial Fair Play) enforcement, transfer budgets, wage management, and gate receipts
-- **Team Management** — Formation selection, tactic configuration, squad building, and youth academy integration
-- **Career Mode** — Legacy tracking, achievements, fan trust, and manager sackability
-- **Settings** — Configurable difficulty, commentary, audio, match speed, and sack rules
-- **Season System** — Calendar-driven progression with month-by-month events and prize distributions
+- **Player Management** — 80+ attributes per player, injuries with medical
+  types and expected return dates, contracts, wages and transfer value
+- **Match Simulation** — Auto-simulated matches with momentum, cards,
+  injuries and a live event feed; step into the dressing room at half-time
+- **Training & Development** — Training focuses, weekly growth towards a
+  potential ceiling, ageing veterans on the way down, and an academy that
+  keeps producing
+- **A Living League** — Rival clubs buy, sell and develop season after
+  season, so the squads you meet again are never quite the same
+- **Cups & Honours** — A national knockout cup merged into the league
+  calendar, with a trophy cabinet to show for it
+- **Financial System** — FFP enforcement, transfer budgets, wage ceilings
+  and gate receipts
+- **Board & Expectations** — Board patience, sack risk, wage-budget
+  sanctions and a verdict on every run of results
+- **Season System** — A matchday-driven calendar with a winter break and
+  promotion and relegation between divisions
 
 ## Tech Stack
 
@@ -20,10 +31,9 @@ A hyper-realistic football manager simulation game built in Flutter with Riverpo
 | State Management | Flutter Riverpod |
 | Routing | go_router |
 | Local Storage | Hive + path_provider |
-| Data Import | CSV parsing (EAFC26 player database) |
-| Serialization | json_annotation / json_serializable |
-| Animations | Rive, Shimmer |
-| Charts | fl_chart |
+| Data Import | CSV parsing (EAFC26 player database) on a worker isolate |
+| Serialization | Hive type adapters + json_annotation |
+| Utilities | uuid, meta |
 
 ## Getting Started
 
@@ -53,27 +63,32 @@ lib/
 ├── app.dart                    # App entry with router config & theme
 ├── main.dart                   # App initialization (Hive, window setup)
 ├── core/
-│   ├── models/                 # Data models (Player, Manager, Team, Match, Season, Tactics, YouthPlayer)
-│   ├── services/               # Business logic (CSV Loader, Financial, Save, Match Simulator)
+│   ├── models/                 # Player, Team, Match, Season, Tactics, Transfer, YouthPlayer, Cup
+│   ├── services/               # CSV loader, match simulator, development, injuries, cups, finance, save
 │   ├── adapters/               # Hive type adapters for serialization
-│   ├── constants/              # Game constants, position/formation/league/tactic definitions
-│   └── utils/                  # Utilities (CSV parser, math helpers)
-├── providers/                  # Riverpod providers (game, match, career, season, team, tactics, settings, academy)
+│   ├── constants/              # Game constants, position/formation/tactic/league definitions
+│   └── utils/                  # CSV parsing and math helpers
+├── providers/                  # Riverpod providers (career session, player database, match, settings)
 ├── screens/
 │   ├── startup/                # Splash/loading screen
-│   ├── main_menu/              # Main navigation hub
-│   ├── career/                 # Career dashboard with stats & legacy
+│   ├── main_menu/              # Junction to every game mode
+│   ├── new_career/             # League and club selection
+│   ├── career/                 # Career dashboard (fixture, board, league position)
+│   ├── shell/                  # Bottom-navigation shell around the main tabs
 │   ├── match/                  # Live match screen with simulation
-│   ├── team_management/        # Squad/formation/tactic management
-│   └── settings/               # Game settings (difficulty, audio, commentary)
+│   ├── team_management/        # Squad, tactics and youth academy
+│   ├── transfer_market/        # Transfer hub: market, live talks, news
+│   ├── league_table/           # Standings and fixtures
+│   ├── settings/               # Difficulty, commentary, audio, sack rules
+│   └── privacy/                # Privacy policy screen
 └── data/
-    ├── csv/                    # Player CSV database (EAFC26-Men.csv)
-    └── assets/                 # Images and sounds
+    └── csv/                    # Player CSV database (EAFC26-Men.csv)
 
 test/
+├── core/                       # Flow tests (career, cups, development, injuries, rollover)
 ├── models/                     # Model unit tests (Player, Manager, Season, Team)
-├── services/                   # Service tests (CSV Loader, Financial, Save)
-└── screens/                    # Screen widget tests (Main Menu, Match)
+├── services/                   # Service tests (CSV, finance, transfers, development, injuries, save)
+└── screens/                    # Screen widget tests
 ```
 
 ## Key Models
@@ -83,7 +98,8 @@ test/
 - Core Stats: OVR, PAC, SHO, PAS, DRI, DEF, PHY
 - Sub-Stats: 27 attributes covering finishing, vision, defense, physicality, GK skills
 - Meta: preferred foot, weak foot quality, skill moves, height, weight, traits
-- Runtime: fitness, form, morale, match rating, injury status, contract, wages, transfer value
+- Runtime: fitness, form, morale, match rating, games and minutes, injury (type
+  and expected return date), contract, wages, transfer value
 
 ### Manager
 - Career info: name, age, nationality
@@ -92,20 +108,29 @@ test/
 - Drama Meter: event-driven intensity system for key story moments
 
 ### Season
-- Calendar-driven progression (August – May)
-- Monthly events: matches, injuries, transfers, prizes
-- Financial tracking: gate receipts, sponsorship, transfer budget
+- Matchday-driven calendar (August – May) with a winter break and the cup
+  rounds merged into the schedule
+- League records, form and league position, with rival fixtures simulated
+  around the manager's own matches
+
+### Cup
+- A knockout bracket seeded per league per year, anchored into the calendar
+  between league matchdays; cup results never touch the league table
 
 ## Screens
 
 | Screen | Description |
 |--------|-------------|
 | Startup | Loading/splash screen with initialization |
-| Main Menu | Navigation to all game modes |
-| Career Dashboard | Season progress, league table, match history, stats charts |
+| Main Menu | Navigation hub, new career and continue |
+| New Career | League and club selection with a pre-commit summary |
+| Home (Career Dashboard) | Fixture, board objective, league position, news |
 | Match | Live simulated match with real-time commentary and events |
-| Team Management | Squad view, formation selection, tactic configuration, youth academy |
+| Team Management | Squad, tactics and youth academy |
+| Transfer Hub | Market, live talks, my players and the news feed |
+| League Table | Standings and fixtures |
 | Settings | Difficulty, commentary, audio, match speed, sack rules |
+| Privacy | Offline-storage privacy policy |
 
 ## Contributing
 

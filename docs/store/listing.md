@@ -42,7 +42,13 @@ matters, and every instruction carries into your next match.
 BUILD THE SQUAD, SHAPE THE FUTURE
 Scout the transfer market within your budget, negotiate fees, and keep
 Financial Fair Play happy. Promote academy prospects and watch them grow
-from raw potential into first-team stars.
+from raw potential into first-team stars — set their training focus and
+the minutes they earn decide how fast they climb.
+
+A LEAGUE THAT LIVES
+Rivals spend, grow and age season after season. Youngsters break through,
+veterans slow down, and the physio's table fills up with knocks, strains
+and the occasional long-term blow — every squad is a story in motion.
 
 MANAGE THE EXPECTATIONS
 Board confidence, fan trust and your sack risk react to every result.
@@ -69,7 +75,9 @@ Initial release of Touchline Legend.
 • Career mode with league and club selection
 • Live match ticker with half-time tactical changes
 • Full tactical system with 9 adjustable settings
-• Transfer market, youth academy and finances
+• National knockout cup with a trophy cabinet
+• Transfer market, loans, youth academy and training focuses
+• Player growth, ageing and injuries with real recovery times
 • Season standings, form guides and legacy tracking
 • Offline play — your career is saved on your device
 ```

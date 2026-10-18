@@ -72,7 +72,7 @@ class MainMenuScreen extends ConsumerWidget {
                   ),
                   const SizedBox(height: 48),
                   Text(
-                    'v${AppConfig.version} · Demo build',
+                    'v${AppConfig.version}',
                     style: theme.textTheme.labelSmall,
                     textAlign: TextAlign.center,
                   ),
