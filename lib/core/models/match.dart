@@ -35,6 +35,11 @@ class MatchEvent {
 
 class PlayerRating {
   final String playerName;
+
+  /// The player's database id. Player identity is an id, never a name: two
+  /// squad-mates can share a name, and every stat folded back into the squad
+  /// keys on this. Null only on hand-built ratings in tests.
+  final int? playerId;
   final String position;
   final int rating;
   final int goals;
@@ -44,6 +49,7 @@ class PlayerRating {
 
   PlayerRating({
     required this.playerName,
+    this.playerId,
     required this.position,
     required this.rating,
     required this.goals,

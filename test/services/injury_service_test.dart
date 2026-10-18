@@ -255,4 +255,64 @@ void main() {
       expect(xi.any((p) => p.id == keeper.id), isTrue);
     });
   });
+
+  group('Identity', () {
+    test('an id sends exactly that twin to the treatment room', () {
+      // Two players, one name, different ids. The id is the route the match
+      // report now travels; the name is only the legacy fallback.
+      final twinA = stubPlayer(id: 70, name: 'J. Smith', random: Random(70));
+      final twinB = stubPlayer(id: 71, name: 'J. Smith', random: Random(71));
+      final squad = [twinA, twinB];
+
+      // Find a matchday where the id-targeted twin's scare is a real one.
+      int? matchday;
+      for (var d = 0; d < 200 && matchday == null; d++) {
+        if (InjuryService.rollMatchInjury(twinA,
+                leagueId: 'l', year: 2026, matchday: d) !=
+            null) {
+          matchday = d;
+        }
+      }
+      expect(matchday, isNotNull,
+          reason: 'no real absence rolled for the probe twin');
+
+      final injured = InjuryService.applyMatchInjuries(
+        squad,
+        const [],
+        downPlayerIds: [twinA.id],
+        leagueId: 'l',
+        year: 2026,
+        matchday: matchday!,
+      );
+
+      expect(injured, [twinA]);
+      expect(twinA.isInjured, isTrue);
+      expect(twinB.isInjured, isFalse,
+          reason: 'his namesake must stay fit');
+    });
+
+    test('the name fallback still resolves a lone player', () {
+      final player = stubPlayer(id: 80, name: 'Probe', random: Random(80));
+
+      int? matchday;
+      for (var d = 0; d < 200 && matchday == null; d++) {
+        if (InjuryService.rollMatchInjury(player,
+                leagueId: 'l', year: 2026, matchday: d) !=
+            null) {
+          matchday = d;
+        }
+      }
+      expect(matchday, isNotNull);
+
+      final injured = InjuryService.applyMatchInjuries(
+        [player],
+        [player.name],
+        leagueId: 'l',
+        year: 2026,
+        matchday: matchday!,
+      );
+
+      expect(injured, [player]);
+    });
+  });
 }

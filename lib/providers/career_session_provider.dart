@@ -491,7 +491,7 @@ BoardVerdict? applyMatchResult(WidgetRef ref, MatchResult result) {
     // much of the week's work actually counts towards development.
     _developTrainingWeek(
       session,
-      minutes: _minutesByName(result, userIsHome: userIsHome),
+      minutes: _minutesFor(result, session.team, userIsHome: userIsHome),
     );
   }
 
@@ -562,36 +562,59 @@ CareerSession _rebuildSession(CareerSession session, SeasonState season) {
   return updated;
 }
 
-/// Minutes per player from the manager's side of the match report.
-Map<String, int> _minutesByName(
-  MatchResult result, {
+/// Minutes per player from the manager's side of the match report, keyed by
+/// player id.
+///
+/// Ids are the only safe key: two squad-mates can share a name, and a name
+/// key would merge their minutes. Ratings hand-built in tests may carry no id,
+/// so the squad is consulted as a name fallback before a line is dropped.
+Map<int, int> _minutesFor(
+  MatchResult result,
+  Team team, {
   required bool userIsHome,
 }) {
   final ratings = userIsHome ? result.homeRatings : result.awayRatings;
-  return {for (final rating in ratings) rating.playerName: rating.minutes};
+  final byName = {for (final p in team.squad) p.name: p};
+  final minutes = <int, int>{};
+  for (final rating in ratings) {
+    final id = rating.playerId ?? byName[rating.playerName]?.id;
+    if (id == null) continue;
+    minutes[id] = rating.minutes;
+  }
+  return minutes;
 }
 
 /// Rolls the match report's injury scares into real absences.
 ///
 /// The engine reports every time a player went down; the physio decides how
-/// much of it is real. The manager's own side is the only side that matters
-/// here — rival squads are rebuilt from the CSV every session and have
-/// nowhere to carry an injury.
+/// much of it is real. Scares are resolved by player id where the event
+/// carries one, with the name as a fallback, so two squad-mates sharing a
+/// name cannot have the wrong one sent to the treatment room. The manager's
+/// own side is the only side that matters here — rival squads are rebuilt
+/// from the CSV every session and have nowhere to carry an injury.
 void _applyMatchInjuries(
   CareerSession session,
   MatchResult result, {
   required bool userIsHome,
 }) {
   final side = userIsHome ? 'home' : 'away';
-  final down = {
-    for (final event in result.events)
-      if (event.isInjury && event.team == side) event.player,
-  };
-  if (down.isEmpty) return;
+  final downIds = <int>[];
+  final downNames = <String>[];
+  for (final event in result.events) {
+    if (!event.isInjury || event.team != side) continue;
+    final id = event.extraData?['playerId'];
+    if (id is int) {
+      downIds.add(id);
+    } else {
+      downNames.add(event.player);
+    }
+  }
+  if (downIds.isEmpty && downNames.isEmpty) return;
   final season = session.season;
   final injured = InjuryService.applyMatchInjuries(
     session.team.squad,
-    down,
+    downNames,
+    downPlayerIds: downIds,
     leagueId: season.leagueId,
     year: season.currentYear,
     matchday: season.currentMatchday,
@@ -631,7 +654,7 @@ void _addMedicalNews(CareerSession session, Player player) {
 /// matches produce minute-by-minute reports.
 void _developTrainingWeek(
   CareerSession session, {
-  Map<String, int> minutes = const {},
+  Map<int, int> minutes = const {},
 }) {
   final season = session.season;
   InjuryService.healDue(
@@ -642,7 +665,7 @@ void _developTrainingWeek(
   for (final player in session.team.squad) {
     DevelopmentService.developWeek(
       player,
-      minutes: minutes[player.name] ?? 0,
+      minutes: minutes[player.id] ?? 0,
       leagueId: season.leagueId,
       year: season.currentYear,
       matchday: season.currentMatchday,
@@ -670,19 +693,25 @@ void _developTrainingWeek(
 ///
 /// The report keeps each side's ratings apart, so the manager's own list is
 /// simply the side he was on — no slicing by eleven, which matters now that
-/// substitutes and keepers are rated too. Minutes were never recorded at all
-/// before this, which is why games played sat at zero for a whole career and
-/// the squad's mood had nothing to react to.
+/// substitutes and keepers are rated too. Ratings are matched to the squad by
+/// id first and by name only as a fallback, so duplicate names cannot merge
+/// two men's seasons into one. Minutes were never recorded at all before
+/// this, which is why games played sat at zero for a whole career and the
+/// squad's mood had nothing to react to.
 void _recordAppearances(
   Team team,
   MatchResult result, {
   required bool userIsHome,
 }) {
   final ratings = userIsHome ? result.homeRatings : result.awayRatings;
+  final byId = {for (final p in team.squad) p.id: p};
   final byName = {for (final p in team.squad) p.name: p};
   for (final rating in ratings) {
     if (rating.minutes <= 0) continue;
-    final player = byName[rating.playerName];
+    final player = (rating.playerId == null
+            ? null
+            : byId[rating.playerId]) ??
+        byName[rating.playerName];
     if (player == null) continue;
     player.gamesPlayed += 1;
     player.minutesPlayed += rating.minutes;

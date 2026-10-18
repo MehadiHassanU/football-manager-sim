@@ -632,6 +632,103 @@ void main() {
           reason: 'the fixture is already in the record');
       expect(starter.minutesPlayed, 90);
     });
+
+    testWidgets('squad-mates who share a name keep separate season stats',
+        (tester) async {
+      final base = stubLeagueDatabase(8);
+      final original = base.teams.first;
+      // Real clubs ship like this: Gil Vicente carry two "Zé Carlos".
+      final twinA = stubPlayer(
+          id: 9001,
+          name: 'J. Smith',
+          position: 'CB',
+          team: original.name,
+          ovr: 76);
+      final twinB = stubPlayer(
+          id: 9002,
+          name: 'J. Smith',
+          position: 'CB',
+          team: original.name,
+          ovr: 72);
+      final removed = {original.squad[2].id, original.squad[3].id};
+      final squad = [
+        for (final p in original.squad)
+          if (!removed.contains(p.id)) p,
+        twinA,
+        twinB,
+      ];
+      final userTeam = Team(
+        id: original.id,
+        name: original.name,
+        shortName: original.shortName,
+        leagueId: original.leagueId,
+        country: original.country,
+        stadiumName: original.stadiumName,
+        stadiumCapacity: original.stadiumCapacity,
+        budget: original.budget,
+        color: original.color,
+        badgeUrl: original.badgeUrl,
+        squad: squad,
+      );
+      final db = PlayerDatabase(
+        players: [
+          for (final p in base.players)
+            if (!removed.contains(p.id)) p,
+          twinA,
+          twinB,
+        ],
+        teams: [userTeam, ...base.teams.skip(1)],
+        leagues: base.leagues,
+        playersByTeam: {...base.playersByTeam, original.id: squad},
+      );
+
+      final session = _sessionFor(db);
+      final container = _containerFor(db, session);
+      final fixture = session.season.currentFixtureFor(session.team.id);
+      final userIsHome = fixture?.isHomeFor(session.team.id) ?? true;
+      final mine = [
+        for (final p in session.team.squad)
+          PlayerRating(
+            playerName: p.name,
+            playerId: p.id,
+            position: p.primaryPosition,
+            rating: p.id == twinA.id ? 9 : (p.id == twinB.id ? 5 : 7),
+            goals: 0,
+            assists: 0,
+            minutes: 90,
+            started: true,
+          ),
+      ];
+      final result = MatchResult(
+        homeTeam: userIsHome ? session.team.name : db.teams[1].name,
+        awayTeam: userIsHome ? db.teams[1].name : session.team.name,
+        homeGoals: 2,
+        awayGoals: 0,
+        events: const [],
+        homeRatings: userIsHome ? mine : const <PlayerRating>[],
+        awayRatings: userIsHome ? const <PlayerRating>[] : mine,
+        homeMomentum: const [],
+        awayMomentum: const [],
+        fullTimeCommentary: '',
+      );
+
+      final formA = twinA.form;
+      final formB = twinB.form;
+      await _run(tester, container, (ref) => applyMatchResult(ref, result));
+
+      // Each twin is credited with his own line: the shared name merges
+      // nothing.
+      expect(twinA.gamesPlayed, 1);
+      expect(twinB.gamesPlayed, 1);
+      expect(twinA.minutesPlayed, 90);
+      expect(twinB.minutesPlayed, 90);
+      expect(twinA.matchRating, 9);
+      expect(twinB.matchRating, 5);
+      expect(twinA.form, ((formA * 2 + 9) / 3).round().clamp(1, 10));
+      expect(twinB.form, ((formB * 2 + 5) / 3).round().clamp(1, 10));
+      expect(twinA.morale, greaterThan(twinB.morale),
+          reason: 'the 9-rated twin had the better afternoon');
+    });
   });
 
   group('theme setting', () {

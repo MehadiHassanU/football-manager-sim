@@ -39,10 +39,13 @@ class MatchSimulatorService {
 
     var homeGoals = 0;
     var awayGoals = 0;
-    final homeScorers = <String, int>{};
-    final awayScorers = <String, int>{};
-    final homeAssists = <String, int>{};
-    final awayAssists = <String, int>{};
+    // Goal and assist tallies are keyed by player id, never by name: two
+    // players in one squad can share a name, and a shared name would merge
+    // their days into one line of the ratings sheet.
+    final homeScorers = <int, int>{};
+    final awayScorers = <int, int>{};
+    final homeAssists = <int, int>{};
+    final awayAssists = <int, int>{};
 
     events.add(MatchEvent(
       type: 'kickoff',
@@ -109,16 +112,17 @@ class MatchSimulatorService {
         final assistName = (assist != null && assist.name != attacker.name)
             ? assist.name
             : null;
+        final assistId = assistName == null ? null : assist!.id;
         if (homeAttacks) {
           homeGoals++;
         } else {
           awayGoals++;
         }
         (homeAttacks ? homeScorers : awayScorers)
-            .update(attacker.name, (v) => v + 1, ifAbsent: () => 1);
-        if (assistName != null) {
+            .update(attacker.id, (v) => v + 1, ifAbsent: () => 1);
+        if (assistId != null) {
           (homeAttacks ? homeAssists : awayAssists)
-              .update(assistName, (v) => v + 1, ifAbsent: () => 1);
+              .update(assistId, (v) => v + 1, ifAbsent: () => 1);
         }
         events.add(MatchEvent(
           type: 'goal',
@@ -191,6 +195,9 @@ class MatchSimulatorService {
           player: attacker.name,
           description: '${attacker.name} is down and needs treatment.',
           minute: minute,
+          // The physio resolves the victim by id: a name can belong to two
+          // players, and the wrong twin must not be sent to the treatment room.
+          extraData: {'playerId': attacker.id},
         ));
         // A knock that stops play usually ends the player's afternoon: the
         // freshest substitute comes on right away, unless the bench is spent.
@@ -376,8 +383,8 @@ class MatchSimulatorService {
     side.onPitch.removeWhere((p) => p.id == off.id);
     side.onPitch.add(on);
     side.bench.removeWhere((p) => p.id == on.id);
-    side.offAt[off.name] = minute;
-    side.onAt[on.name] = minute;
+    side.offAt[off.id] = minute;
+    side.onAt[on.id] = minute;
     side.subbedOn.add(on);
     side.subs += 1;
     return true;
@@ -417,13 +424,13 @@ class MatchSimulatorService {
   List<PlayerRating> _generateRatings(
     Player goalkeeper,
     _MatchSide side, {
-    required Map<String, int> goals,
-    required Map<String, int> assists,
+    required Map<int, int> goals,
+    required Map<int, int> assists,
     required int goalDifference,
   }) {
     PlayerRating rate(Player p, int minutes, {required bool started}) {
-      final scored = goals[p.name] ?? 0;
-      final assisted = assists[p.name] ?? 0;
+      final scored = goals[p.id] ?? 0;
+      final assisted = assists[p.id] ?? 0;
       // Start from a par performance for the player's quality, then let the
       // result and their direct contributions move it.
       var rating = 6.0 + (p.ovr - 70) / 14.0;
@@ -433,6 +440,7 @@ class MatchSimulatorService {
       rating += scored * 1.2 + assisted * 0.5;
       return PlayerRating(
         playerName: p.name,
+        playerId: p.id,
         position: p.primaryPosition,
         rating: rating.round().clamp(3, 10),
         goals: scored,
@@ -448,9 +456,9 @@ class MatchSimulatorService {
       // appearance, minute and rating in his career record.
       rate(goalkeeper, matchMinutes, started: true),
       for (final p in side.squad)
-        rate(p, side.offAt[p.name] ?? matchMinutes, started: true),
+        rate(p, side.offAt[p.id] ?? matchMinutes, started: true),
       for (final p in side.subbedOn)
-        rate(p, matchMinutes - (side.onAt[p.name] ?? matchMinutes),
+        rate(p, matchMinutes - (side.onAt[p.id] ?? matchMinutes),
             started: false),
     ];
   }
@@ -495,11 +503,11 @@ class _MatchSide {
   /// Substitutes who have come on, in appearance order.
   final List<Player> subbedOn = [];
 
-  /// The minute a starter left the pitch.
-  final Map<String, int> offAt = {};
+  /// The minute a starter left the pitch, keyed by player id.
+  final Map<int, int> offAt = {};
 
-  /// The minute a substitute came on.
-  final Map<String, int> onAt = {};
+  /// The minute a substitute came on, keyed by player id.
+  final Map<int, int> onAt = {};
 
   /// Changes made so far, against [maxSubstitutions].
   int subs = 0;

@@ -50,22 +50,33 @@ class InjuryService {
 
   /// The aftermath of every injury scare in a match report.
   ///
-  /// [downPlayers] are the names that went down (one entry per event), a
-  /// player who went down more than once is treated once, and an already
-  /// injured player is not re-injured. Returns the players newly in the
-  /// treatment room, so the caller can put them in the news.
+  /// [downPlayerIds] is the exact route: match events carry the victim's id,
+  /// because two squad-mates can share a name. [downPlayers] stays as the
+  /// name fallback for events recorded before ids travelled with them. A
+  /// player who went down more than once — or matched both ways — is treated
+  /// once, and an already injured player is not re-injured. Returns the
+  /// players newly in the treatment room, so the caller can put them in the
+  /// news.
   static List<Player> applyMatchInjuries(
     Iterable<Player> squad,
     Iterable<String> downPlayers, {
+    Iterable<int> downPlayerIds = const [],
     required String leagueId,
     required int year,
     required int matchday,
   }) {
+    final byId = {for (final player in squad) player.id: player};
     final byName = {for (final player in squad) player.name: player};
+    final down = <Player>[
+      for (final id in downPlayerIds)
+        if (byId[id] != null) byId[id]!,
+      for (final name in downPlayers)
+        if (byName[name] != null) byName[name]!,
+    ];
+    final treated = <int>{};
     final injured = <Player>[];
-    for (final name in downPlayers) {
-      final player = byName[name];
-      if (player == null || player.isInjured) continue;
+    for (final player in down) {
+      if (!treated.add(player.id) || player.isInjured) continue;
       final injury = rollMatchInjury(
         player,
         leagueId: leagueId,
