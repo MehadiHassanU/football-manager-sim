@@ -10,6 +10,7 @@ import 'package:football_manager_sim/core/models/match.dart';
 import 'package:football_manager_sim/core/models/player.dart';
 import 'package:football_manager_sim/core/models/season.dart';
 import 'package:football_manager_sim/core/models/team.dart';
+import 'package:football_manager_sim/core/services/match_simulator_service.dart';
 import 'package:football_manager_sim/core/services/transfer_market_service.dart';
 import 'package:football_manager_sim/providers/career_session_provider.dart';
 import 'package:football_manager_sim/providers/data_providers.dart';
@@ -99,16 +100,6 @@ MatchResult _scoreline({int homeGoals = 0, int awayGoals = 0}) => MatchResult(
       fullTimeCommentary: '',
     );
 
-/// Total goals scored across every club after [matchdays] results were applied
-/// under the supplied difficulty.
-int _leagueGoalsAfter(CareerSession session, int matchdays) {
-  var goals = 0;
-  for (final r in session.season.records.values) {
-    goals += r.goalsFor;
-  }
-  return goals;
-}
-
 void main() {
   late Directory storageDir;
 
@@ -131,38 +122,41 @@ void main() {
               'unaffected');
     });
 
-    testWidgets('Hard produces more league goals than Easy over a season run',
-        (tester) async {
-      // The round RNG is seeded from league/year/round and not from the clock,
-      // so the only thing that can differ between these two runs is the
-      // strength the difficulty setting feeds the simulator.
-      Future<int> runAt(String difficulty) async {
-        final db = stubLeagueDatabase(8);
-        final session = _sessionFor(db);
-        final container = _containerFor(db, session, extra: [
-          difficultyProvider.overrideWith((ref) => difficulty),
-        ]);
-        for (var round = 0; round < 10; round++) {
-          final fixture = session.season.currentFixtureFor(session.team.id);
-          if (fixture == null) break;
-          final userIsHome = fixture.isHomeFor(session.team.id);
-          await _run(
-            tester,
-            container,
-            (ref) =>
-                applyMatchResult(ref, _scoreline(homeGoals: 1, awayGoals: 1)),
-          );
-          expect(userIsHome, isA<bool>());
-        }
-        return _leagueGoalsAfter(session, 10);
+    test('the difficulty scale tilts simulated results towards the favourite',
+        () {
+      // Difficulty feeds a strength multiplier into the match simulator, and
+      // the simulator's goal rates conserve the total (home + away = 2.5):
+      // a boost decides WHO scores, not how many goals exist. It pushes goals
+      // towards the stronger club and away from the weaker one. A season-sized
+      // sample is far too noisy to see that (flips are a few fixtures a year),
+      // so this measures the simulator directly across a fixed seed batch.
+      final sim = MatchSimulatorService();
+      final easyBoost = difficultyStrengthMultiplier('Easy');
+      final hardBoost = difficultyStrengthMultiplier('Hard');
+      var easyFavourite = 0;
+      var easyUnderdog = 0;
+      var hardFavourite = 0;
+      var hardUnderdog = 0;
+      for (var seed = 0; seed < 20000; seed++) {
+        final easy = sim.simulateScore(
+          homeStrength: 90 * easyBoost,
+          awayStrength: 60 * easyBoost,
+          rng: Random(seed),
+        );
+        final hard = sim.simulateScore(
+          homeStrength: 90 * hardBoost,
+          awayStrength: 60 * hardBoost,
+          rng: Random(seed),
+        );
+        easyFavourite += easy.$1;
+        easyUnderdog += easy.$2;
+        hardFavourite += hard.$1;
+        hardUnderdog += hard.$2;
       }
-
-      final easy = await runAt('Easy');
-      final hard = await runAt('Hard');
-
-      expect(hard, greaterThan(easy),
-          reason: 'Hard must scale the opposition up (easy=$easy, '
-              'hard=$hard)');
+      expect(hardFavourite, greaterThan(easyFavourite),
+          reason: 'Hard must push goals towards the stronger club');
+      expect(hardUnderdog, lessThan(easyUnderdog),
+          reason: 'and take them away from the weaker one');
     });
 
     testWidgets('difficulty leaves the manager\'s own club untouched',

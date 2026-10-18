@@ -201,5 +201,27 @@ void main() {
       expect(loaded, isNotNull);
       expect(loaded!.leagueId, 'laliga');
     });
+
+    test('saveSeason keeps the top scorer list', () async {
+      final service = await createService();
+      final season = SeasonState(
+          leagueId: 'laliga', currentMatchday: 10, totalMatchdays: 38);
+      season.recordContribution(
+        playerId: 77,
+        playerName: 'Star Striker',
+        clubId: 'club_0',
+        clubName: 'Club Zero',
+        goals: 12,
+        assists: 4,
+      );
+      await service.saveSeason(season);
+      final loaded = await service.loadSeason();
+      final record = loaded!.scorers[77];
+      expect(record, isNotNull);
+      expect(record!.playerName, 'Star Striker');
+      expect(record.goals, 12);
+      expect(record.assists, 4);
+      expect(record.clubName, 'Club Zero');
+    });
   });
 }

@@ -320,4 +320,82 @@ void main() {
     // The decimal rating reaches the squad without being rounded away.
     expect(striker.matchRating, 7.6);
   });
+
+  testWidgets('a league result folds both sides into the season scorers',
+      (tester) async {
+    final db = stubLeagueDatabase(clubCount);
+    final ids = [for (final t in db.teams) t.id];
+    final rounds = buildRounds(ids, rng: Random(1));
+    final homeRound = [
+      for (var r = 0; r < rounds.length; r++)
+        if (rounds[r].any((f) => f.homeTeamId == ids.first)) r,
+    ].first;
+
+    final session = _sessionFor(db, clubCount, homeRound);
+    final container = _containerFor(db, session);
+    final fixture = session.season.currentFixtureFor(session.team.id)!;
+    expect(fixture.isHomeFor(session.team.id), isTrue);
+
+    final userStriker =
+        session.team.squad.firstWhere((p) => p.primaryPosition == 'ST');
+    final rival = db.teams.firstWhere((t) => t.id == fixture.awayTeamId);
+    final rivalStriker =
+        rival.squad.firstWhere((p) => p.primaryPosition == 'ST');
+
+    await tester.pumpWidget(
+      UncontrolledProviderScope(
+        container: container,
+        child: MaterialApp(
+          home: Scaffold(
+            body: _ApplyResult(MatchResult(
+              homeTeam: db.teams.first.name,
+              awayTeam: rival.name,
+              homeGoals: 2,
+              awayGoals: 1,
+              events: const [],
+              homeRatings: [
+                PlayerRating(
+                  playerName: userStriker.name,
+                  playerId: userStriker.id,
+                  position: 'ST',
+                  rating: 8.1,
+                  goals: 2,
+                  assists: 0,
+                  minutes: 90,
+                  started: true,
+                ),
+              ],
+              awayRatings: [
+                PlayerRating(
+                  playerName: rivalStriker.name,
+                  playerId: rivalStriker.id,
+                  position: 'ST',
+                  rating: 7.0,
+                  goals: 1,
+                  assists: 0,
+                  minutes: 90,
+                  started: true,
+                ),
+              ],
+              homeMomentum: const [],
+              awayMomentum: const [],
+              fullTimeCommentary: '',
+            )),
+          ),
+        ),
+      ),
+    );
+    await tester.tap(find.text('apply'));
+    await tester.pump();
+
+    final after = container.read(careerSessionProvider)!;
+    final mine = after.season.scorers[userStriker.id];
+    final theirs = after.season.scorers[rivalStriker.id];
+    expect(mine, isNotNull, reason: 'the user side belongs on the list too');
+    expect(mine!.goals, 2);
+    expect(mine.clubId, fixture.homeTeamId);
+    expect(theirs, isNotNull, reason: 'rival scorers are attributed as well');
+    expect(theirs!.goals, 1);
+    expect(theirs.clubId, fixture.awayTeamId);
+  });
 }

@@ -281,6 +281,30 @@ void main() {
         expect(rec.played, 1);
       }
     });
+
+    test('a simulated scoreline is never negative and scoring is believable',
+        () {
+      // The old Poisson count returned minus one when the first draw already
+      // fell under the threshold, which pushed negative goals into the table
+      // and biased every simulated match a goal low. A full 14-round, 8-club
+      // season is 112 club-fixtures: at roughly 1.25 goals per side that is
+      // about 140 goals, while the broken generator produced under 80.
+      final season = _season(8);
+      for (var r = 0; r < season.rounds.length; r++) {
+        simulateRound(season, r);
+      }
+      var totalGoals = 0;
+      for (final round in season.rounds) {
+        for (final fixture in round) {
+          if (!fixture.played) continue;
+          expect(fixture.homeGoals, greaterThanOrEqualTo(0));
+          expect(fixture.awayGoals, greaterThanOrEqualTo(0));
+          totalGoals += fixture.homeGoals + fixture.awayGoals;
+        }
+      }
+      expect(totalGoals, greaterThan(100),
+          reason: 'a full season cannot average under a goal a game');
+    });
   });
 
   group('League table', () {

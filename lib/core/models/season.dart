@@ -70,6 +70,49 @@ class LeagueStanding {
   final int position;
 }
 
+/// One player's goals and assists for the season, for the league's top
+/// scorer list.
+///
+/// It lives on the season rather than on the players because rival squads are
+/// rebuilt from the CSV on every load: their tallies have nowhere else to
+/// live. Goals recorded here are league goals, matching the table beside it;
+/// the full all-competitions total is folded onto the user's own players.
+class ScorerRecord {
+  ScorerRecord({
+    required this.playerId,
+    required this.playerName,
+    required this.clubId,
+    required this.clubName,
+    this.goals = 0,
+    this.assists = 0,
+  });
+
+  final int playerId;
+  String playerName;
+  String clubId;
+  String clubName;
+  int goals;
+  int assists;
+
+  Map<String, dynamic> toJson() => {
+        'playerId': playerId,
+        'playerName': playerName,
+        'clubId': clubId,
+        'clubName': clubName,
+        'goals': goals,
+        'assists': assists,
+      };
+
+  factory ScorerRecord.fromJson(Map<dynamic, dynamic> json) => ScorerRecord(
+        playerId: (json['playerId'] as num?)?.toInt() ?? 0,
+        playerName: '${json['playerName'] ?? ''}',
+        clubId: '${json['clubId'] ?? ''}',
+        clubName: '${json['clubName'] ?? ''}',
+        goals: (json['goals'] as num?)?.toInt() ?? 0,
+        assists: (json['assists'] as num?)?.toInt() ?? 0,
+      );
+}
+
 class SeasonState {
   SeasonState({
     required this.leagueId,
@@ -81,11 +124,13 @@ class SeasonState {
     Map<String, LeagueRecord>? records,
     List<List<Fixture>>? rounds,
     List<String>? legacyFixturePairs,
+    Map<int, ScorerRecord>? scorers,
     this.cup,
   })  : _totalMatchdaysOverride = totalMatchdays,
         _legacyFixturePairs = legacyFixturePairs ?? const <String>[],
         rounds = rounds ?? const <List<Fixture>>[],
-        records = records ?? <String, LeagueRecord>{};
+        records = records ?? <String, LeagueRecord>{},
+        scorers = scorers ?? <int, ScorerRecord>{};
 
   final String leagueId;
 
@@ -112,6 +157,10 @@ class SeasonState {
 
   /// Every club's record, keyed by team id.
   final Map<String, LeagueRecord> records;
+
+  /// League goals and assists, keyed by player id. Rebuilt from empty at
+  /// every rollover because it belongs to the season, not the career.
+  final Map<int, ScorerRecord> scorers;
 
   /// Schema v1 stored a flat, shuffled list of "home|away" strings with no
   /// round structure, which made it impossible to tell who the user was
@@ -222,6 +271,47 @@ class SeasonState {
       if (row.teamId == teamId) return row.position;
     }
     return 0;
+  }
+
+  /// Credits a player's league tallies for this season.
+  void recordContribution({
+    required int playerId,
+    required String playerName,
+    required String clubId,
+    required String clubName,
+    int goals = 0,
+    int assists = 0,
+  }) {
+    if (goals == 0 && assists == 0) return;
+    final entry = scorers.putIfAbsent(
+      playerId,
+      () => ScorerRecord(
+        playerId: playerId,
+        playerName: playerName,
+        clubId: clubId,
+        clubName: clubName,
+      ),
+    );
+    entry
+      ..playerName = playerName
+      ..clubId = clubId
+      ..clubName = clubName
+      ..goals += goals
+      ..assists += assists;
+  }
+
+  /// The league's leading scorers: goals, then assists, then name so tied
+  /// players keep a stable order.
+  List<ScorerRecord> topScorers({int limit = 20}) {
+    final sorted = scorers.values.toList()
+      ..sort((a, b) {
+        final byGoals = b.goals.compareTo(a.goals);
+        if (byGoals != 0) return byGoals;
+        final byAssists = b.assists.compareTo(a.assists);
+        if (byAssists != 0) return byAssists;
+        return a.playerName.compareTo(b.playerName);
+      });
+    return sorted.take(limit).toList();
   }
 }
 

@@ -75,6 +75,14 @@ void main() {
       final scorer = session.team.squad.first;
       scorer.goals = 6;
       scorer.assists = 4;
+      session.season.recordContribution(
+        playerId: scorer.id,
+        playerName: scorer.name,
+        clubId: session.team.id,
+        clubName: session.team.name,
+        goals: 6,
+        assists: 4,
+      );
 
       final container = ProviderContainer(
         overrides: [
@@ -119,6 +127,8 @@ void main() {
       final rolled = after.team.squad.firstWhere((p) => p.id == scorer.id);
       expect(rolled.goals, 0);
       expect(rolled.assists, 0);
+      expect(after.season.scorers, isEmpty,
+          reason: 'the top scorer list belongs to a season');
     });
 
     testWidgets('a club stays put when no neighbouring division exists',

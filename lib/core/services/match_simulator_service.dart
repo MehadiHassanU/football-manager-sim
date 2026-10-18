@@ -293,7 +293,11 @@ class MatchSimulatorService {
       k += 1;
       product *= rng.nextDouble();
     }
-    return k - 1;
+    // The count is [k]: the first draw already stands for the first
+    // multiplication, so a first draw under the threshold is zero goals. The
+    // old `k - 1` returned minus one there, which shipped negative scorelines
+    // into rival fixtures and biased every simulated match a goal low.
+    return k;
   }
 
   int _getMinuteIncrement(Tactic? home, Tactic? away) {

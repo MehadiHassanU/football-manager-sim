@@ -21,6 +21,7 @@ import '../core/services/financial_service.dart';
 import '../core/services/injury_service.dart';
 import '../core/services/match_simulator_service.dart';
 import '../core/services/rival_market_service.dart';
+import '../core/services/scorer_attribution_service.dart';
 import '../core/services/transfer_market_service.dart';
 import '../core/services/save_service.dart';
 import 'data_providers.dart';
@@ -414,6 +415,7 @@ SeasonState migrateSeasonSchedule(
         ? {for (final t in rivals) t.id: LeagueRecord()}
         : season.records,
     rounds: rounds,
+    scorers: season.scorers,
   );
 }
 
@@ -484,6 +486,12 @@ BoardVerdict? applyMatchResult(WidgetRef ref, MatchResult result) {
 
   if (firstRun) {
     _recordAppearances(session.team, result, userIsHome: userIsHome);
+    // The league's top scorer list hears about both sides of a league match.
+    // Rival squads are rebuilt from the CSV on every load, so their tallies
+    // live on the season; cup ties are excluded, like the table beside them.
+    if (fixture != null && fixture.competition == 'league') {
+      _recordMatchScorers(season, fixture, result);
+    }
     // Before the training week: a player who went down in this match must
     // not develop on the back of it.
     _applyMatchInjuries(session, result, userIsHome: userIsHome);
@@ -505,6 +513,10 @@ BoardVerdict? applyMatchResult(WidgetRef ref, MatchResult result) {
     isWinterBreak: advanced == season.winterBreakRound,
     records: season.records,
     rounds: season.rounds,
+    // The registry travels with the season like the table does: the copy
+    // below replaces the session's season, and without this every goal
+    // credited so far would be quietly dropped on each matchday.
+    scorers: season.scorers,
     cup: season.cup,
   );
 
@@ -727,6 +739,36 @@ void _recordAppearances(
         rating.rating >= 7 ? 4 : (rating.rating <= 5 ? -5 : 0);
     player.morale = (player.morale + moraleShift).clamp(0, 100);
   }
+}
+
+/// Folds a played league match's rating sheet into the season scorer list.
+///
+/// Both sides are folded: the manager's players belong on the league's top
+/// scorer list just like the rivals'. Cup ties are deliberately excluded —
+/// this is the league table's companion list — and so are rating lines with
+/// no id, which only hand-built test data produces.
+void _recordMatchScorers(
+  SeasonState season,
+  Fixture fixture,
+  MatchResult result,
+) {
+  void fold(List<PlayerRating> ratings, String clubId, String clubName) {
+    for (final rating in ratings) {
+      final id = rating.playerId;
+      if (id == null || (rating.goals == 0 && rating.assists == 0)) continue;
+      season.recordContribution(
+        playerId: id,
+        playerName: rating.playerName,
+        clubId: clubId,
+        clubName: clubName,
+        goals: rating.goals,
+        assists: rating.assists,
+      );
+    }
+  }
+
+  fold(result.homeRatings, fixture.homeTeamId, result.homeTeam);
+  fold(result.awayRatings, fixture.awayTeamId, result.awayTeam);
 }
 
 /// How many matchdays an ignored player waits before asking to leave.
@@ -1284,6 +1326,7 @@ void simulateRound(
   SeasonState season,
   int round, {
   Map<String, double> strengths = const {},
+  Map<String, Team> teams = const {},
 }) {
   final pending =
       season.fixturesForRound(round).where((f) => !f.played).toList();
@@ -1303,6 +1346,21 @@ void simulateRound(
     // Cup results decide a bracket, never the table.
     if (fixture.competition == 'league') {
       _applyResultToRecords(season, fixture);
+      // Attribute the goals so the top scorer list moves for every club. The
+      // user's own fixture never reaches here: it is played on the live
+      // screen and folded in with its real rating sheet.
+      final home = teams[fixture.homeTeamId];
+      final away = teams[fixture.awayTeamId];
+      if (home != null && away != null) {
+        const ScorerAttributionService().attribute(
+          season: season,
+          home: home,
+          away: away,
+          homeGoals: homeGoals,
+          awayGoals: awayGoals,
+          rng: rng,
+        );
+      }
     }
   }
 }
@@ -1326,7 +1384,15 @@ void _simulateRemainingFixtures(
             ? _squadStrength(t)
             : _squadStrength(t) * boost,
   };
-  simulateRound(session.season, round, strengths: strengths);
+  simulateRound(
+    session.season,
+    round,
+    strengths: strengths,
+    teams: {
+      if (db != null)
+        for (final t in db.teams) t.id: t,
+    },
+  );
 }
 
 /// The board's verdict on the manager after a matchday.
@@ -1489,6 +1555,7 @@ void advancePastBye(WidgetRef ref) {
     isWinterBreak: advanced == session.season.winterBreakRound,
     records: session.season.records,
     rounds: session.season.rounds,
+    scorers: session.season.scorers,
     cup: session.season.cup,
   );
   final updated = _rebuildSession(session, season);
@@ -1587,6 +1654,7 @@ void resumeFromWinterBreak(WidgetRef ref) {
     isWinterBreak: false,
     records: session.season.records,
     rounds: session.season.rounds,
+    scorers: session.season.scorers,
     cup: session.season.cup,
   );
   final updated = _rebuildSession(session, season);

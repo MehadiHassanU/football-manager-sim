@@ -50,6 +50,19 @@ class SeasonStateAdapter implements TypeAdapter<SeasonState> {
       cup = CupState.fromJson(Map<String, dynamic>.from(cupRaw));
     }
 
+    // Added with the top scorers wave: absent on older saves, which read back
+    // with an empty list.
+    final scorers = <int, ScorerRecord>{};
+    final rawScorers = fields[11];
+    if (rawScorers is Map) {
+      rawScorers.forEach((key, value) {
+        final id = int.tryParse(key.toString());
+        if (id != null && value is Map) {
+          scorers[id] = ScorerRecord.fromJson(value);
+        }
+      });
+    }
+
     return SeasonState(
       leagueId: fields[0] as String,
       currentMatchday: fields[1] as int,
@@ -61,6 +74,7 @@ class SeasonStateAdapter implements TypeAdapter<SeasonState> {
           records.isNotEmpty ? records : _recordsFromLegacyPoints(fields[6]),
       rounds: rounds,
       legacyFixturePairs: legacyPairs,
+      scorers: scorers,
       cup: cup,
     );
   }
@@ -78,7 +92,7 @@ class SeasonStateAdapter implements TypeAdapter<SeasonState> {
   @override
   void write(BinaryWriter writer, SeasonState obj) {
     writer
-      ..writeByte(11)
+      ..writeByte(12)
       ..writeByte(0)
       ..write(obj.leagueId)
       ..writeByte(1)
@@ -105,6 +119,11 @@ class SeasonStateAdapter implements TypeAdapter<SeasonState> {
           entry.key: entry.value.toJson(),
       })
       ..writeByte(10)
-      ..write(obj.cup?.toJson());
+      ..write(obj.cup?.toJson())
+      ..writeByte(11)
+      ..write({
+        for (final entry in obj.scorers.entries)
+          '${entry.key}': entry.value.toJson(),
+      });
   }
 }
