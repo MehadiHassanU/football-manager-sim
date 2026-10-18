@@ -6,6 +6,7 @@ import 'main_menu/main_menu_screen.dart';
 import 'new_career/new_career_screen.dart';
 import 'shell/home_shell.dart';
 import 'career/career_dashboard_screen.dart';
+import 'calendar/calendar_screen.dart';
 import 'match/match_screen.dart';
 import 'team_management/team_management_screen.dart';
 import 'settings/settings_screen.dart';
@@ -75,6 +76,10 @@ final appRouter = GoRouter(
         GoRoute(
           path: '/league-table',
           builder: (context, state) => const LeagueTableScreen(),
+        ),
+        GoRoute(
+          path: '/calendar',
+          builder: (context, state) => const CalendarScreen(),
         ),
       ],
     ),

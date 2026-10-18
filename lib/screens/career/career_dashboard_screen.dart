@@ -816,32 +816,54 @@ class _PressureCard extends StatelessWidget {
 class _QuickActions extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
-    return Row(
+    // Two rows of two: four buttons abreast overflowed a 360 dp phone, and
+    // the pairings are natural — the squad and its market, then the two
+    // season reference pages.
+    return Column(
       children: [
-        Expanded(
-          child: OutlinedButton.icon(
-            onPressed: () => context.go('/squad'),
-            icon: const Icon(Icons.groups_outlined, size: 18),
-            label: const Text('Squad'),
-          ),
+        Row(
+          children: [
+            Expanded(
+              child: OutlinedButton.icon(
+                onPressed: () => context.go('/squad'),
+                icon: const Icon(Icons.groups_outlined, size: 18),
+                label: const Text('Squad'),
+              ),
+            ),
+            const SizedBox(width: 8),
+            Expanded(
+              child: OutlinedButton.icon(
+                onPressed: () => context.push('/transfers'),
+                icon: const Icon(Icons.swap_horiz, size: 18),
+                label: const Text('Transfers'),
+              ),
+            ),
+          ],
         ),
-        const SizedBox(width: 8),
-        Expanded(
-          child: OutlinedButton.icon(
-            onPressed: () => context.push('/transfers'),
-            icon: const Icon(Icons.swap_horiz, size: 18),
-            label: const Text('Transfers'),
-          ),
-        ),
-        const SizedBox(width: 8),
-        Expanded(
-          child: OutlinedButton.icon(
-            // The league table is a drill-down from Home; Settings was already
-            // a tab in the shell below, so that button was a duplicate.
-            onPressed: () => context.push('/league-table'),
-            icon: const Icon(Icons.table_chart_outlined, size: 18),
-            label: const Text('Table'),
-          ),
+        const SizedBox(height: 8),
+        Row(
+          children: [
+            Expanded(
+              child: OutlinedButton.icon(
+                // The season calendar is a drill-down like the table: the
+                // dates are derived from the matchday counter.
+                onPressed: () => context.push('/calendar'),
+                icon: const Icon(Icons.calendar_month_outlined, size: 18),
+                label: const Text('Schedule'),
+              ),
+            ),
+            const SizedBox(width: 8),
+            Expanded(
+              child: OutlinedButton.icon(
+                // The league table is a drill-down from Home; Settings was
+                // already a tab in the shell below, so that button was a
+                // duplicate.
+                onPressed: () => context.push('/league-table'),
+                icon: const Icon(Icons.table_chart_outlined, size: 18),
+                label: const Text('Table'),
+              ),
+            ),
+          ],
         ),
       ],
     );
