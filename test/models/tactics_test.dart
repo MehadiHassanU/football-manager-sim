@@ -16,6 +16,48 @@ void main() {
   List<Player> distinctSquad() =>
       stubPlayerDatabase(random: Random(1)).teams.first.squad;
 
+  group('Formation catalogue', () {
+    test('every formation draws eleven slots with the keeper first', () {
+      expect(kFormationLayouts.keys.toSet(), Formation.values.toSet(),
+          reason: 'the dropdown must not offer a shape the pitch cannot draw');
+      for (final formation in Formation.values) {
+        final layout = kFormationLayouts[formation]!;
+        expect(layout, hasLength(11), reason: formation.name);
+        expect(layout.first.position, 'GK', reason: formation.name);
+        expect(layout.where((s) => s.position == 'GK'), hasLength(1),
+            reason: formation.name);
+        for (final slot in layout) {
+          expect(kPositionAffinity.containsKey(slot.position), isTrue,
+              reason: '${formation.name} draws an unknown position '
+                  '${slot.position}');
+          expect(slot.x, inInclusiveRange(0.0, 1.0), reason: formation.name);
+          expect(slot.y, inInclusiveRange(0.0, 1.0), reason: formation.name);
+        }
+      }
+    });
+
+    test('labels are unique and read like shapes', () {
+      final labels = {for (final f in Formation.values) f.label};
+      expect(labels, hasLength(Formation.values.length));
+      for (final label in labels) {
+        expect(label, matches(RegExp(r'^[3-5](-\d){2,3}$')), reason: label);
+      }
+    });
+
+    test('the assistant can field every formation from one squad', () {
+      final squad = freshSquad();
+      for (final formation in Formation.values) {
+        final slots = resolveFormationSlots(squad, formation, const []);
+        expect(slots, hasLength(11), reason: formation.name);
+        expect(slots.first.player!.primaryPosition, 'GK',
+            reason: formation.name);
+        final ids = [for (final slot in slots) slot.player!.id];
+        expect(ids.toSet(), hasLength(11),
+            reason: '${formation.name} must not field a player twice');
+      }
+    });
+  });
+
   group('resolveFormationSlots', () {
     test('an empty selection is the assistant\'s pick', () {
       final squad = freshSquad();

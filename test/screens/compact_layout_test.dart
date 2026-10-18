@@ -225,6 +225,17 @@ void main() {
     await openTab(tester, 'Tactics');
 
     expect(find.text('4-4-2'), findsOneWidget);
+
+    // The dropdown offers the whole catalogue, not a hardcoded handful.
+    await tester.tap(find.text('4-4-2'));
+    await tester.pumpAndSettle();
+    expect(find.text('4-4-1-1'), findsOneWidget);
+    await tester.tap(find.text('4-4-1-1'));
+    await tester.pumpAndSettle();
+    expect(find.text('4-4-1-1'), findsOneWidget,
+        reason: 'the field now shows the chosen shape');
+    expect(find.text('4-4-2'), findsNothing);
+
     expect(find.text('Approach'), findsOneWidget);
 
     await openTab(tester, 'Transitions');

@@ -588,20 +588,27 @@ class _TacticsTabState extends ConsumerState<_TacticsTab> {
         children: [
           Padding(
             padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
-            child: SingleChildScrollView(
-              scrollDirection: Axis.horizontal,
-              child: Row(
-                children: [
-                  for (final f in Formation.values) ...[
-                    ChoiceChip(
-                      label: Text(_formationLabel(f)),
-                      selected: tactic.formation == f,
-                      onSelected: (_) => _apply(tactic.copyWith(formation: f)),
-                    ),
-                    const SizedBox(width: 8),
-                  ],
-                ],
+            child: DropdownButtonFormField<Formation>(
+              initialValue: tactic.formation,
+              isDense: true,
+              decoration: const InputDecoration(
+                labelText: 'Formation',
+                border: OutlineInputBorder(),
+                isDense: true,
+                contentPadding:
+                    EdgeInsets.symmetric(horizontal: 12, vertical: 10),
               ),
+              // Every shape in the catalogue draws on the pitch below, so the
+              // dropdown has nothing to hide behind a "coming soon" excuse.
+              items: [
+                for (final f in Formation.values)
+                  DropdownMenuItem(value: f, child: Text(f.label)),
+              ],
+              onChanged: (f) {
+                if (f != null && f != tactic.formation) {
+                  _apply(tactic.copyWith(formation: f));
+                }
+              },
             ),
           ),
           Padding(
@@ -882,7 +889,7 @@ class _TacticsTabState extends ConsumerState<_TacticsTab> {
 
   Future<void> _saveCurrent() async {
     final name = _nameController.text.trim();
-    final label = name.isEmpty ? _formationLabel(_tactic.formation) : name;
+    final label = name.isEmpty ? _tactic.formation.label : name;
     saveNamedTactic(ref, label, _tactic);
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
@@ -894,13 +901,6 @@ class _TacticsTabState extends ConsumerState<_TacticsTab> {
     final name = value.toString().split('.').last;
     return name.replaceAllMapped(RegExp(r'([A-Z])'), (m) => ' ${m[1]}').trim();
   }
-
-  String _formationLabel(Formation f) => switch (f) {
-        Formation.fourFourTwo => '4-4-2',
-        Formation.fourThreeThree => '4-3-3',
-        Formation.threeFiveTwo => '3-5-2',
-        Formation.fourTwoThreeOne => '4-2-3-1',
-      };
 }
 
 /// The stored pick at [index], or 0 ("let the assistant pick").
