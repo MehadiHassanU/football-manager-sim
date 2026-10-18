@@ -29,7 +29,9 @@ const int matchMinutes = 90;
 const int normalMatchSpeedSeconds = 30;
 const int fastMatchSpeedSeconds = 15;
 const int maxSubstitutions = 3;
-const int substitutionPerHalf = 3;
+
+/// Outfield substitutes a squad can name, when it has that many spare.
+const int benchSize = 7;
 
 // Development
 const double youngPlayerGrowthRate = 0.15;

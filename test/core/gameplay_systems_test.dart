@@ -94,7 +94,6 @@ MatchResult _scoreline({int homeGoals = 0, int awayGoals = 0}) => MatchResult(
       homeGoals: homeGoals,
       awayGoals: awayGoals,
       events: const [],
-      playerRatings: const [],
       homeMomentum: const [],
       awayMomentum: const [],
       fullTimeCommentary: '',
@@ -566,10 +565,9 @@ void main() {
         homeGoals: 2,
         awayGoals: 0,
         events: const [],
-        // The simulator returns the home side's eleven first, so the order
-        // here has to match which side the manager is on.
-        playerRatings:
-            userIsHome ? [...mine, ...theirs] : [...theirs, ...mine],
+        // The report keeps each side's own list, in home/away order.
+        homeRatings: userIsHome ? mine : theirs,
+        awayRatings: userIsHome ? theirs : mine,
         homeMomentum: const [],
         awayMomentum: const [],
         fullTimeCommentary: '',

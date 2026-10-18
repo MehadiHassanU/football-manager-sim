@@ -1,5 +1,6 @@
 import 'package:meta/meta.dart';
 
+import '../constants/game_constants.dart';
 import '../constants/tactic_definitions.dart';
 import 'player.dart';
 
@@ -233,11 +234,14 @@ bool canFillSlot(Player player, String slot) =>
 /// the treatment room slide down the pecking order the same way — a stored pick
 /// who is injured or out of shape only takes the field when nobody fit can
 /// stand in for him, and the slot reports [FormationSlot.replaced] until then.
+/// Players in [reservedIds] are the manager's bench picks: they are never
+/// selected into the XI, stored or automatic.
 List<FormationSlot> resolveFormationSlots(
   List<Player> squad,
   Formation formation,
   List<int> manualIds, {
   double minFitness = 45,
+  Set<int> reservedIds = const {},
 }) {
   final layout = kFormationLayouts[formation] ?? const <PitchPosition>[];
   final fit = squad.where((p) => p.fitness > minFitness).toList();
@@ -250,10 +254,11 @@ List<FormationSlot> resolveFormationSlots(
   final lastResort = <int, Player>{};
   final used = <int>{};
 
-  // First pass: seat the manager's picks.
+  // First pass: seat the manager's picks. A pick who is reserved for the
+  // bench is skipped: he cannot stand in the XI as well.
   for (var i = 0; i < layout.length && i < manualIds.length; i++) {
     final id = manualIds[i];
-    if (id <= 0) continue;
+    if (id <= 0 || reservedIds.contains(id)) continue;
     final player = byId[id];
     if (player == null) continue; // he left the club: back to the assistant
     stored[i] = id;
@@ -267,11 +272,14 @@ List<FormationSlot> resolveFormationSlots(
 
   // The assistant fills the rest. A pick who is out of action is kept out of
   // the general pool: he only ever plays his own slot, and only as a last
-  // resort.
+  // resort. Bench picks are reserved for the bench and never fill the XI.
   final deferred = {for (final p in lastResort.values) p.id};
   final remaining = [
     for (final p in pool)
-      if (!used.contains(p.id) && !deferred.contains(p.id)) p,
+      if (!used.contains(p.id) &&
+          !deferred.contains(p.id) &&
+          !reservedIds.contains(p.id))
+        p,
   ];
 
   void takeBest(int slotIndex, bool Function(Player) ok) {
@@ -323,9 +331,10 @@ List<Player> resolveStartingEleven(
   Formation formation,
   List<int> manualIds, {
   double minFitness = 45,
+  Set<int> reservedIds = const {},
 }) {
-  final slots =
-      resolveFormationSlots(squad, formation, manualIds, minFitness: minFitness);
+  final slots = resolveFormationSlots(squad, formation, manualIds,
+      minFitness: minFitness, reservedIds: reservedIds);
   return [
     for (final slot in slots)
       if (slot.player != null) slot.player!,
@@ -366,9 +375,10 @@ List<Player> startingOutfield(List<Player> squad, Formation formation) =>
   Formation formation,
   List<int> manualIds, {
   double minFitness = 45,
+  Set<int> reservedIds = const {},
 }) {
-  final slots =
-      resolveFormationSlots(squad, formation, manualIds, minFitness: minFitness);
+  final slots = resolveFormationSlots(squad, formation, manualIds,
+      minFitness: minFitness, reservedIds: reservedIds);
   final keeperSlot = slots.isEmpty ? null : slots.first.player;
   final goalkeeper =
       keeperSlot != null && keeperSlot.primaryPosition == 'GK' ? keeperSlot : null;
@@ -439,6 +449,102 @@ List<int> reconcileXiPicks(
   }
   return result;
 }
+
+/// One bench spot: the stored pick (null = assistant) and who actually fills
+/// it once availability is sorted.
+@immutable
+class BenchSlot {
+  const BenchSlot({this.playerId, this.player});
+
+  /// The stored manual pick for this spot, or null when the assistant picks.
+  final int? playerId;
+
+  /// Who actually sits on the bench here.
+  final Player? player;
+
+  bool get manual => playerId != null;
+}
+
+/// Builds the bench, slot by slot, from [squad] minus [fieldedIds].
+///
+/// [benchIds] is sparse and bench-slot-indexed like the starting XI list:
+/// `0` means "the assistant picks this spot". Stored picks are honoured even
+/// when they are injured (the engine simply will not send an injured player
+/// on). The assistant fills the gaps with the strongest available bodies and,
+/// on a fully automatic bench, always names a spare keeper first when the
+/// squad has one. A squad with fewer than [size] spare players names what it
+/// has.
+List<BenchSlot> resolveBenchSlots(
+  List<Player> squad,
+  Set<int> fieldedIds,
+  List<int> benchIds, {
+  int size = benchSize,
+}) {
+  final candidates = [
+    for (final p in squad)
+      if (!fieldedIds.contains(p.id)) p,
+  ];
+  final capacity = size < candidates.length ? size : candidates.length;
+  final slots = List<Player?>.filled(capacity, null);
+  final stored = List<int?>.filled(capacity, null);
+  final byId = {for (final p in candidates) p.id: p};
+  final used = <int>{};
+
+  // The manager's picks first, in bench order.
+  for (var i = 0; i < capacity && i < benchIds.length; i++) {
+    final id = benchIds[i];
+    if (id <= 0) continue;
+    final player = byId[id];
+    if (player == null) continue; // he left the club: back to the assistant
+    stored[i] = id;
+    if (used.add(player.id)) slots[i] = player;
+  }
+
+  // The assistant fills the gaps with the best available bodies; an injured
+  // spare is not worth a bench spot, so he only arrives if the manager says so.
+  final auto = [
+    for (final p in candidates)
+      if (!used.contains(p.id) && !p.isInjured) p,
+  ]..sort((a, b) => b.ovr != a.ovr ? b.ovr.compareTo(a.ovr) : a.name.compareTo(b.name));
+
+  // A fully automatic bench always carries keeper cover when a spare exists.
+  final untouched = stored.every((id) => id == null);
+  if (untouched && !slots.any((p) => p?.primaryPosition == 'GK')) {
+    final gkIndex = auto.indexWhere((p) => p.primaryPosition == 'GK');
+    if (gkIndex >= 0) {
+      final empty = slots.indexWhere((p) => p == null);
+      if (empty >= 0) {
+        final keeper = auto.removeAt(gkIndex);
+        slots[empty] = keeper;
+        used.add(keeper.id);
+      }
+    }
+  }
+  for (var i = 0; i < capacity && auto.isNotEmpty; i++) {
+    if (slots[i] != null) continue;
+    final player = auto.removeAt(0);
+    slots[i] = player;
+    used.add(player.id);
+  }
+
+  return [
+    for (var i = 0; i < capacity; i++)
+      BenchSlot(playerId: stored[i], player: slots[i]),
+  ];
+}
+
+/// The players who would sit on the bench, ready for the match engine.
+List<Player> resolveBenchPlayers(
+  List<Player> squad,
+  Set<int> fieldedIds,
+  List<int> benchIds, {
+  int size = benchSize,
+}) =>
+    [
+      for (final slot
+          in resolveBenchSlots(squad, fieldedIds, benchIds, size: size))
+        if (slot.player != null) slot.player!,
+    ];
 
 T _enumByName<T extends Enum>(List<T> values, String? name, T fallback) {
   for (final v in values) {

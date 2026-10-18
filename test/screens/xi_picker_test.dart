@@ -149,4 +149,77 @@ void main() {
     );
     expect(tester.takeException(), isNull);
   });
+
+  testWidgets('a bench chip stores the manager\'s substitute', (tester) async {
+    final db = stubPlayerDatabase(random: Random(6));
+    final session = bootSession(db);
+    await pumpScreen(tester, db, session);
+
+    // The assistant names the spares; chip 0 holds 'Home 10' (the best).
+    expect(find.text('SUBS'), findsOneWidget);
+    expect(find.text('ST 10'), findsOneWidget);
+
+    await tester.tap(find.byKey(const ValueKey('bench-slot-0')));
+    await tester.pumpAndSettle();
+    expect(find.text('Pick substitute'), findsOneWidget);
+    expect(find.text('Let the assistant pick'), findsNothing,
+        reason: 'there is no stored pick to hand back yet');
+
+    // 'Home 1' is the weakest spare, so the lazy list starts him off-screen.
+    final target = find.text('Home 1').hitTestable();
+    await tester.scrollUntilVisible(
+      target,
+      120,
+      scrollable: find.descendant(
+        of: find.byType(BottomSheet),
+        matching: find.byType(Scrollable),
+      ),
+    );
+    await tester.tap(target);
+    await tester.pumpAndSettle();
+
+    final live = current(tester);
+    expect(live.benchIds, [1001]);
+    expect(live.startXI, isEmpty, reason: 'the XI was never touched');
+    expect(find.text('CB 1'), findsOneWidget,
+        reason: 'the chip now shows the manager\'s pick');
+
+    await tester.tap(find.text('Auto'));
+    await tester.pumpAndSettle();
+    expect(current(tester).benchIds, isEmpty,
+        reason: 'Auto hands the bench back to the assistant');
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('benching a starter moves him off the XI', (tester) async {
+    final db = stubPlayerDatabase(random: Random(6));
+    final session = bootSession(db);
+    session.startXI = List<int>.filled(11, 0);
+    session.startXI[10] = 1015; // Home 15 pinned to the second striker slot
+    await pumpScreen(tester, db, session);
+
+    await tester.tap(find.byKey(const ValueKey('bench-slot-0')));
+    await tester.pumpAndSettle();
+    expect(find.text('XI · ST'), findsOneWidget,
+        reason: 'the sheet says where the pinned striker stands');
+
+    await tester.tap(find.text('Home 15'));
+    await tester.pumpAndSettle();
+
+    final live = current(tester);
+    expect(live.benchIds, [1015]);
+    expect(live.startXI, isEmpty,
+        reason: 'the stored XI pick was cleared when he moved to the bench');
+
+    // The squad list agrees: he is a substitute now, and the assistant
+    // cannot just quietly pick him back into the XI.
+    await tester.tap(find.text('Squad'));
+    await tester.pumpAndSettle();
+    final row = find.widgetWithText(ListTile, 'Home 15');
+    expect(find.descendant(of: row, matching: find.text('SUB')),
+        findsOneWidget);
+    expect(find.descendant(of: row, matching: find.text('XI')), findsNothing,
+        reason: 'a bench pick is reserved out of the XI');
+    expect(tester.takeException(), isNull);
+  });
 }

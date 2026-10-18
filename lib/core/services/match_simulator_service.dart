@@ -16,6 +16,8 @@ class MatchSimulatorService {
     required List<Player> homeSquad,
     required Player awayGoalkeeper,
     required List<Player> awaySquad,
+    List<Player> homeBench = const [],
+    List<Player> awayBench = const [],
     Tactic? homeTactic,
     Tactic? awayTactic,
   }) {
@@ -28,6 +30,12 @@ class MatchSimulatorService {
     // A small home advantage: enough to break an even tie on paper, never
     // enough to make an away fixture feel decided before kick-off.
     final homeEdge = (homePower + 1.5) - awayPower;
+
+    // Who is on the pitch right now, who is still on the bench, and the
+    // minutes everyone has played. Substitutions update these in place, so
+    // the rest of the simulation works off the current eleven.
+    final homeSide = _MatchSide(homeSquad, homeBench);
+    final awaySide = _MatchSide(awaySquad, awayBench);
 
     var homeGoals = 0;
     var awayGoals = 0;
@@ -78,8 +86,10 @@ class MatchSimulatorService {
       awayMomentum.add((1 - momentum) * 100);
 
       final homeAttacks = rng.nextDouble() < momentum;
-      final attackSquad = homeAttacks ? homeSquad : awaySquad;
-      final defenceSquad = homeAttacks ? awaySquad : homeSquad;
+      final attackSide = homeAttacks ? homeSide : awaySide;
+      final defenceSide = homeAttacks ? awaySide : homeSide;
+      final attackSquad = attackSide.onPitch;
+      final defenceSquad = defenceSide.onPitch;
       final attackRating = homeAttacks ? homePower + 1.5 : awayPower;
       final defenceRating = homeAttacks ? awayPower : homePower;
       final team = homeAttacks ? 'home' : 'away';
@@ -182,15 +192,20 @@ class MatchSimulatorService {
           description: '${attacker.name} is down and needs treatment.',
           minute: minute,
         ));
-      } else if (minute > 55 && roll < goalChance + 0.60) {
-        final replacement = _randomPlayer(attackSquad);
-        events.add(MatchEvent(
-          type: 'sub',
-          team: team,
-          player: attacker.name,
-          description: '${replacement.name} replaces ${attacker.name}.',
-          minute: minute,
-        ));
+        // A knock that stops play usually ends the player's afternoon: the
+        // freshest substitute comes on right away, unless the bench is spent.
+        final replacement = _benchPick(attackSide);
+        if (replacement != null &&
+            _substitute(attackSide, attacker, replacement, minute)) {
+          events.add(MatchEvent(
+            type: 'sub',
+            team: team,
+            player: attacker.name,
+            description: '${replacement.name} replaces ${attacker.name}, '
+                'who cannot continue.',
+            minute: minute,
+          ));
+        }
       } else {
         events.add(MatchEvent(
           type: 'commentary',
@@ -200,16 +215,26 @@ class MatchSimulatorService {
           minute: minute,
         ));
       }
+
+      // Fresh legs in the closing half-hour: the bench sends the freshest
+      // substitute on for the most tired body on the pitch. The old feed
+      // invented a substitute from the XI purely to fill the event.
+      if (minute >= 55) {
+        _freshnessPass(homeSide, 'home', minute, events);
+        _freshnessPass(awaySide, 'away', minute, events);
+      }
     }
 
     final homeRatings = _generateRatings(
-      homeSquad,
+      homeGoalkeeper,
+      homeSide,
       goals: homeScorers,
       assists: homeAssists,
       goalDifference: homeGoals - awayGoals,
     );
     final awayRatings = _generateRatings(
-      awaySquad,
+      awayGoalkeeper,
+      awaySide,
       goals: awayScorers,
       assists: awayAssists,
       goalDifference: awayGoals - homeGoals,
@@ -221,7 +246,8 @@ class MatchSimulatorService {
       homeGoals: homeGoals,
       awayGoals: awayGoals,
       events: events,
-      playerRatings: [...homeRatings, ...awayRatings],
+      homeRatings: homeRatings,
+      awayRatings: awayRatings,
       homeMomentum: homeMomentum,
       awayMomentum: awayMomentum,
       fullTimeCommentary: 'Full-time: $homeGoals - $awayGoals',
@@ -319,13 +345,83 @@ class MatchSimulatorService {
     return 'GOAL! $scorer $finish$assistText.';
   }
 
+  /// The freshest available substitute — an injured bench player cannot come
+  /// on, and keepers stay out of out-field substitutions because the engine
+  /// never changes keepers mid-match.
+  ///
+  /// A freshness change also wants the stand-in to actually be fresher than
+  /// the man coming off: [atLeastAsFreshAs] rejects a tired bench.
+  Player? _benchPick(_MatchSide side, {Player? atLeastAsFreshAs}) {
+    final available = [
+      for (final p in side.bench)
+        if (!p.isInjured && p.primaryPosition != 'GK') p,
+    ];
+    if (available.isEmpty) return null;
+    available.sort((a, b) {
+      if (a.fitness != b.fitness) return b.fitness.compareTo(a.fitness);
+      return b.ovr.compareTo(a.ovr);
+    });
+    final pick = available.first;
+    if (atLeastAsFreshAs != null &&
+        pick.fitness < atLeastAsFreshAs.fitness) {
+      return null;
+    }
+    return pick;
+  }
+
+  /// Swaps [on] in for [off] when the side still has changes left; records
+  /// the minutes both will be credited with.
+  bool _substitute(_MatchSide side, Player off, Player on, int minute) {
+    if (side.subs >= maxSubstitutions) return false;
+    side.onPitch.removeWhere((p) => p.id == off.id);
+    side.onPitch.add(on);
+    side.bench.removeWhere((p) => p.id == on.id);
+    side.offAt[off.name] = minute;
+    side.onAt[on.name] = minute;
+    side.subbedOn.add(on);
+    side.subs += 1;
+    return true;
+  }
+
+  /// The closing-half-hour change: with a small chance, the most tired body
+  /// on the pitch makes way for the freshest substitute. No bench (or a
+  /// bench that is no fresher) means no change and no event.
+  void _freshnessPass(
+    _MatchSide side,
+    String team,
+    int minute,
+    List<MatchEvent> events,
+  ) {
+    if (side.subs >= maxSubstitutions || side.bench.isEmpty) return;
+    if (rng.nextDouble() >= 0.14) return;
+    final onPitch = [...side.onPitch]
+      ..sort((a, b) {
+        if (a.fitness != b.fitness) return a.fitness.compareTo(b.fitness);
+        return a.ovr.compareTo(b.ovr);
+      });
+    for (final tired in onPitch) {
+      final fresh = _benchPick(side, atLeastAsFreshAs: tired);
+      if (fresh == null) continue;
+      if (!_substitute(side, tired, fresh, minute)) return;
+      events.add(MatchEvent(
+        type: 'sub',
+        team: team,
+        player: tired.name,
+        description: '${fresh.name} comes on for ${tired.name}.',
+        minute: minute,
+      ));
+      return;
+    }
+  }
+
   List<PlayerRating> _generateRatings(
-    List<Player> squad, {
+    Player goalkeeper,
+    _MatchSide side, {
     required Map<String, int> goals,
     required Map<String, int> assists,
     required int goalDifference,
   }) {
-    return squad.take(11).map((p) {
+    PlayerRating rate(Player p, int minutes, {required bool started}) {
       final scored = goals[p.name] ?? 0;
       final assisted = assists[p.name] ?? 0;
       // Start from a par performance for the player's quality, then let the
@@ -341,10 +437,22 @@ class MatchSimulatorService {
         rating: rating.round().clamp(3, 10),
         goals: scored,
         assists: assisted,
-        minutes: matchMinutes,
-        started: true,
+        minutes: minutes,
+        started: started,
       );
-    }).toList();
+    }
+
+    return [
+      // The keeper plays the whole match and is rated like everyone else —
+      // he used to be left out entirely, which quietly cost him every
+      // appearance, minute and rating in his career record.
+      rate(goalkeeper, matchMinutes, started: true),
+      for (final p in side.squad)
+        rate(p, side.offAt[p.name] ?? matchMinutes, started: true),
+      for (final p in side.subbedOn)
+        rate(p, matchMinutes - (side.onAt[p.name] ?? matchMinutes),
+            started: false),
+    ];
   }
 
   String _generateCommentary(int minute, int homeGoals, int awayGoals) {
@@ -357,4 +465,42 @@ class MatchSimulatorService {
     ];
     return events[rng.nextInt(events.length)];
   }
+}
+
+/// One side's players during a match: the eleven that started, who is on the
+/// pitch right now, who is left on the bench, and — once the whistle goes —
+/// who played how long.
+class _MatchSide {
+  _MatchSide(List<Player> starters, List<Player> bench)
+      : squad = [...starters],
+        onPitch = [...starters],
+        bench = [
+          // A bench that repeats an out-field starter is ignored: the same
+          // body cannot sit on the bench and play.
+          for (final substitute in bench)
+            if (!starters.any((s) => s.id == substitute.id)) substitute,
+        ];
+
+  /// The eleven that started, in order; ratings are reported in this order
+  /// followed by the substitutes.
+  final List<Player> squad;
+
+  /// The mutable current eleven the simulation picks attackers, defenders and
+  /// injuries from.
+  final List<Player> onPitch;
+
+  /// The substitutes still available.
+  final List<Player> bench;
+
+  /// Substitutes who have come on, in appearance order.
+  final List<Player> subbedOn = [];
+
+  /// The minute a starter left the pitch.
+  final Map<String, int> offAt = {};
+
+  /// The minute a substitute came on.
+  final Map<String, int> onAt = {};
+
+  /// Changes made so far, against [maxSubstitutions].
+  int subs = 0;
 }

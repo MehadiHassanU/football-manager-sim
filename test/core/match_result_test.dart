@@ -45,7 +45,6 @@ MatchResult _scoreline(
       homeGoals: homeGoals,
       awayGoals: awayGoals,
       events: const [],
-      playerRatings: const [],
       homeMomentum: const [],
       awayMomentum: const [],
       fullTimeCommentary: '',

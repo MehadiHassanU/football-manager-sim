@@ -168,11 +168,18 @@ class _MatchScreenState extends ConsumerState<MatchScreen> {
             'Your squad is empty. Sign or promote players before kick off.');
       }
       // The manager's stored picks (if any) shape his XI; everything else the
-      // assistant fills in. The opponent is always the assistant's pick.
+      // assistant fills in. Players he named on the bench are reserved there
+      // and cannot be picked into the XI. The opponent is always the
+      // assistant's pick.
+      final benchReserved = <int>{
+        for (final id in session.benchIds)
+          if (id > 0) id,
+      };
       final lineup = resolveMatchLineup(
         session.team.squad,
         session.tactic.formation,
         session.startXI,
+        reservedIds: benchReserved,
       );
       final userSquad = lineup.outfield;
       if (userSquad.isEmpty) {
@@ -190,6 +197,25 @@ class _MatchScreenState extends ConsumerState<MatchScreen> {
       final oppGk =
           _pickGoalkeeper(opponent.squad) ?? _fallbackGoalkeeper(opponent.name);
 
+      // The benches: the manager's stored picks with assistant cover, and an
+      // automatic bench for the opponent.
+      final userBench = resolveBenchPlayers(
+        session.team.squad,
+        {
+          userGk.id,
+          for (final p in userSquad) p.id,
+        },
+        session.benchIds,
+      );
+      final oppBench = resolveBenchPlayers(
+        opponent.squad,
+        {
+          oppGk.id,
+          for (final p in oppSquad) p.id,
+        },
+        const [],
+      );
+
       // Home and away come from the fixture, so an away match is actually
       // simulated (and reported) as the away side.
       final userIsHome = session.season
@@ -206,6 +232,8 @@ class _MatchScreenState extends ConsumerState<MatchScreen> {
         homeSquad: userIsHome ? userSquad : oppSquad,
         awayGoalkeeper: userIsHome ? oppGk : userGk,
         awaySquad: userIsHome ? oppSquad : userSquad,
+        homeBench: userIsHome ? userBench : oppBench,
+        awayBench: userIsHome ? oppBench : userBench,
         homeTactic: userIsHome ? session.tactic : null,
       );
       watch.stop();
@@ -223,7 +251,8 @@ class _MatchScreenState extends ConsumerState<MatchScreen> {
         // The full timeline is kept: the live score is derived from the goal
         // events, and the commentary setting only filters the feed's display.
         events: result.events,
-        playerRatings: result.playerRatings,
+        homeRatings: result.homeRatings,
+        awayRatings: result.awayRatings,
         homeMomentum: result.homeMomentum,
         awayMomentum: result.awayMomentum,
         fullTimeCommentary: commentaryOn ? result.fullTimeCommentary : '',
@@ -456,6 +485,23 @@ class _PreMatch extends ConsumerWidget {
       'fast' => '45 seconds',
       _ => '90 seconds',
     };
+    final lineup = resolveMatchLineup(
+      session.team.squad,
+      session.tactic.formation,
+      session.startXI,
+      reservedIds: {
+        for (final id in session.benchIds)
+          if (id > 0) id,
+      },
+    );
+    final bench = resolveBenchPlayers(
+      session.team.squad,
+      {
+        if (lineup.goalkeeper != null) lineup.goalkeeper!.id,
+        for (final p in lineup.outfield) p.id,
+      },
+      session.benchIds,
+    );
 
     return Scaffold(
       appBar: AppBar(title: const Text('Match')),
@@ -486,6 +532,19 @@ class _PreMatch extends ConsumerWidget {
             const SizedBox(height: 4),
             Text('The match plays out in about $duration.',
                 style: theme.textTheme.bodySmall),
+            if (bench.isNotEmpty) ...[
+              const SizedBox(height: 12),
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 32),
+                child: Text(
+                  'Substitutes: ${bench.map((p) => p.name).join(', ')}',
+                  style: theme.textTheme.bodySmall,
+                  textAlign: TextAlign.center,
+                  maxLines: 3,
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
+            ],
             const SizedBox(height: 24),
             if (starting) ...[
               const SizedBox(

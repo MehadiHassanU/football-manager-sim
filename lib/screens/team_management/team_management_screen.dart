@@ -106,10 +106,19 @@ class _TeamManagementScreenState extends ConsumerState<TeamManagementScreen> {
     // squad inside the list builder.
     final rankIndex = squadRankIndex(allPlayers);
     // Who would walk out for kick-off right now: the squad list flags the XI
-    // so the matchday plans are visible without opening the tactics tab.
+    // and the substitutes so the matchday plans are visible without opening
+    // the tactics tab.
     final xiIds = {
       for (final p in resolveStartingEleven(
-          allPlayers, session.tactic.formation, session.startXI))
+        allPlayers,
+        session.tactic.formation,
+        session.startXI,
+        reservedIds: _benchReserved(session.benchIds),
+      ))
+        p.id,
+    };
+    final subIds = {
+      for (final p in resolveBenchPlayers(allPlayers, xiIds, session.benchIds))
         p.id,
     };
     return Column(
@@ -186,7 +195,11 @@ class _TeamManagementScreenState extends ConsumerState<TeamManagementScreen> {
                       // squad copies + sorts used to run at scroll speed.
                       status: squadStatusOf(player, allPlayers,
                           rankIndex: rankIndex),
-                      tag: xiIds.contains(player.id) ? 'XI' : null,
+                      tag: xiIds.contains(player.id)
+                          ? 'XI'
+                          : subIds.contains(player.id)
+                              ? 'SUB'
+                              : null,
                       onTap: () => showPlayerDetailSheet(context, player),
                     );
                   },
@@ -387,10 +400,12 @@ class _TacticsTabState extends ConsumerState<_TacticsTab> {
       growable: true,
     );
     if (playerId != null) {
-      // A player can only stand in one place.
+      // A player can only stand in one place: clear any other slot holding
+      // him, and pull him off the bench.
       for (var i = 0; i < next.length; i++) {
         if (i != index && next[i] == playerId) next[i] = 0;
       }
+      session.benchIds.remove(playerId);
     }
     next[index] = playerId ?? 0;
     session.startXI = _withoutTrailingZeros(next);
@@ -406,6 +421,103 @@ class _TacticsTabState extends ConsumerState<_TacticsTab> {
     setState(() {});
   }
 
+  /// Stores the manager's pick for one bench spot.
+  void _assignBenchSlot(int index, int? playerId) {
+    final session = ref.read(careerSessionProvider)!;
+    final slots = resolveBenchSlots(
+      session.team.squad,
+      _fieldedIds(session),
+      session.benchIds,
+    );
+    if (index >= slots.length) return;
+    final next = List<int>.generate(
+      slots.length,
+      (i) => _storedPick(session.benchIds, i),
+      growable: true,
+    );
+    if (playerId != null) {
+      for (var i = 0; i < next.length; i++) {
+        if (i != index && next[i] == playerId) next[i] = 0;
+      }
+      // Naming a starter on the bench moves him out of the XI.
+      final startXI = List<int>.generate(
+        kFormationLayouts[session.tactic.formation]?.length ?? 0,
+        (i) => _storedPick(session.startXI, i),
+        growable: true,
+      );
+      var changed = false;
+      for (var i = 0; i < startXI.length; i++) {
+        if (startXI[i] == playerId) {
+          startXI[i] = 0;
+          changed = true;
+        }
+      }
+      if (changed) {
+        session.startXI = _withoutTrailingZeros(startXI);
+      }
+    }
+    next[index] = playerId ?? 0;
+    session.benchIds = _withoutTrailingZeros(next);
+    notifySessionChanged(ref);
+    setState(() {});
+  }
+
+  /// Hands the whole bench back to the assistant.
+  void _autoPickBench() {
+    final session = ref.read(careerSessionProvider)!;
+    session.benchIds = [];
+    notifySessionChanged(ref);
+    setState(() {});
+  }
+
+  /// Who is in the resolved XI right now — the set the bench is built from.
+  Set<int> _fieldedIds(CareerSession session) => {
+        for (final p in resolveStartingEleven(
+          session.team.squad,
+          session.tactic.formation,
+          session.startXI,
+          reservedIds: _benchReserved(session.benchIds),
+        ))
+          p.id,
+      };
+
+  /// Where every squad member already stands in the matchday plans, for the
+  /// picker sheet's tags.
+  Map<int, String> _selectionLabels(CareerSession session) {
+    final labels = <int, String>{};
+    final layout =
+        kFormationLayouts[session.tactic.formation] ?? const <PitchPosition>[];
+    for (var i = 0; i < layout.length; i++) {
+      final id = _storedPick(session.startXI, i);
+      if (id > 0) labels[id] = 'XI · ${layout[i].position}';
+    }
+    for (var i = 0; i < session.benchIds.length; i++) {
+      final id = _storedPick(session.benchIds, i);
+      if (id > 0) labels[id] = 'SUB';
+    }
+    return labels;
+  }
+
+  Widget _benchChip(ThemeData theme, int index, BenchSlot slot) {
+    final player = slot.player;
+    return ActionChip(
+      key: ValueKey('bench-slot-$index'),
+      visualDensity: VisualDensity.compact,
+      materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+      side: slot.manual
+          ? BorderSide(color: theme.colorScheme.primary, width: 1.4)
+          : null,
+      label: Text(
+        player == null ? '—' : '${player.primaryPosition} ${_shortName(player.name)}',
+        style: theme.textTheme.labelSmall?.copyWith(
+          color: (player?.isInjured ?? false) ? const Color(0xFFEF5350) : null,
+          fontWeight: player == null ? null : FontWeight.w600,
+        ),
+      ),
+      onPressed: () => _openBenchPicker(index),
+    );
+  }
+
   Future<void> _openXiPicker(int index) async {
     final session = ref.read(careerSessionProvider)!;
     final layout =
@@ -413,22 +525,31 @@ class _TacticsTabState extends ConsumerState<_TacticsTab> {
     if (index >= layout.length) return;
 
     final currentId = _storedPick(session.startXI, index);
-    final slotLabels = <int, String>{};
-    for (var i = 0; i < layout.length; i++) {
-      final id = _storedPick(session.startXI, i);
-      if (id > 0) slotLabels[id] = 'XI · ${layout[i].position}';
-    }
-
     final picked = await showSelectionPickerSheet(
       context,
       title: 'Pick ${layout[index].position}',
       squad: session.team.squad,
       position: layout[index].position,
       currentPlayerId: currentId > 0 ? currentId : null,
-      slotLabels: slotLabels,
+      slotLabels: _selectionLabels(session),
     );
     if (picked == null || !mounted) return;
     _assignXiSlot(index, picked.playerId);
+  }
+
+  Future<void> _openBenchPicker(int index) async {
+    final session = ref.read(careerSessionProvider)!;
+    final currentId = _storedPick(session.benchIds, index);
+    final picked = await showSelectionPickerSheet(
+      context,
+      title: 'Pick substitute',
+      squad: session.team.squad,
+      position: null,
+      currentPlayerId: currentId > 0 ? currentId : null,
+      slotLabels: _selectionLabels(session),
+    );
+    if (picked == null || !mounted) return;
+    _assignBenchSlot(index, picked.playerId);
   }
 
   @override
@@ -440,10 +561,26 @@ class _TacticsTabState extends ConsumerState<_TacticsTab> {
       session.team.squad,
       tactic.formation,
       session.startXI,
+      reservedIds: _benchReserved(session.benchIds),
     );
     final manualPicks = session.startXI.where((id) => id > 0).length;
     final replaced = slots.where((s) => s.replaced).length;
     final theme = Theme.of(context);
+    final bench = resolveBenchSlots(
+      session.team.squad,
+      {
+        for (final s in slots)
+          if (s.player != null) s.player!.id,
+      },
+      session.benchIds,
+    );
+    final benchManual = session.benchIds.where((id) => id > 0).length;
+    // A spare keeper who is neither starting nor named: worth a quiet nudge.
+    final missingKeeperCover = bench.isNotEmpty &&
+        session.team.squad.any((p) =>
+            p.primaryPosition == 'GK' &&
+            !slots.any((s) => s.player?.id == p.id) &&
+            !bench.any((b) => b.player?.id == p.id));
 
     return DefaultTabController(
       length: 4,
@@ -508,6 +645,52 @@ class _TacticsTabState extends ConsumerState<_TacticsTab> {
               onSlotTap: _openXiPicker,
             ),
           ),
+          if (bench.isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
+              child: SingleChildScrollView(
+                scrollDirection: Axis.horizontal,
+                child: Row(
+                  children: [
+                    Text(
+                      'SUBS',
+                      style: theme.textTheme.labelSmall?.copyWith(
+                        letterSpacing: 1.1,
+                        fontWeight: FontWeight.w800,
+                        color:
+                            theme.colorScheme.onSurface.withValues(alpha: 0.55),
+                      ),
+                    ),
+                    if (missingKeeperCover) ...[
+                      const SizedBox(width: 6),
+                      Tooltip(
+                        message: 'No goalkeeper on the bench',
+                        child: Icon(
+                          Icons.warning_amber_rounded,
+                          size: 15,
+                          color: theme.colorScheme.error,
+                        ),
+                      ),
+                    ],
+                    const SizedBox(width: 10),
+                    for (var i = 0; i < bench.length; i++) ...[
+                      _benchChip(theme, i, bench[i]),
+                      const SizedBox(width: 6),
+                    ],
+                    if (benchManual > 0)
+                      TextButton(
+                        style: TextButton.styleFrom(
+                          minimumSize: Size.zero,
+                          padding: const EdgeInsets.symmetric(horizontal: 8),
+                          tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                        ),
+                        onPressed: _autoPickBench,
+                        child: const Text('Auto'),
+                      ),
+                  ],
+                ),
+              ),
+            ),
           const TabBar(
             tabs: [
               Tab(text: 'Approach'),
@@ -640,26 +823,29 @@ class _TacticsTabState extends ConsumerState<_TacticsTab> {
               ],
             ),
           ),
-          Container(
-            width: double.infinity,
-            padding: const EdgeInsets.fromLTRB(16, 6, 16, 12),
-            child: Text(
-              'Playing style and tempo are read by the match engine; the rest '
-              'are stored with your career and carried into every match.',
-              style: Theme.of(context).textTheme.bodySmall,
-              textAlign: TextAlign.center,
+          // The hint is dropped on short screens: the instruction tabs below
+          // need the pixels more than the sentence does.
+          if (MediaQuery.sizeOf(context).height >= 720)
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.fromLTRB(16, 6, 16, 12),
+              child: Text(
+                'Playing style and tempo are read by the match engine; the rest '
+                'are stored with your career and carried into every match.',
+                style: Theme.of(context).textTheme.bodySmall,
+                textAlign: TextAlign.center,
+              ),
             ),
-          ),
         ],
       ),
     );
   }
 
   /// The pitch grows with the screen but stays short enough on a 640 dp phone
-  /// that the selection header and the instruction tabs underneath still get
+  /// that the selection rows and the instruction tabs underneath still get
   /// usable height.
   double _pitchHeight(BuildContext context) =>
-      (MediaQuery.sizeOf(context).height * 0.38).clamp(240.0, 340.0);
+      (MediaQuery.sizeOf(context).height * 0.30).clamp(168.0, 320.0);
 
   Widget _category({required List<Widget> children}) => ListView(
         padding: const EdgeInsets.fromLTRB(16, 12, 16, 16),
@@ -720,6 +906,19 @@ class _TacticsTabState extends ConsumerState<_TacticsTab> {
 /// The stored pick at [index], or 0 ("let the assistant pick").
 int _storedPick(List<int> ids, int index) =>
     index < ids.length && ids[index] > 0 ? ids[index] : 0;
+
+/// The stored bench picks as a set: they are reserved for the bench and can
+/// never be selected into the XI.
+Set<int> _benchReserved(List<int> benchIds) => {
+      for (final id in benchIds)
+        if (id > 0) id,
+    };
+
+/// "Jamie Vardy" -> "Vardy": the last word is all a chip has room for.
+String _shortName(String name) {
+  final parts = name.split(' ').where((w) => w.isNotEmpty).toList();
+  return parts.length < 2 ? name : parts.last;
+}
 
 /// Sparse selections keep no trailing zeros, so an all-automatic plan is
 /// simply an empty list.

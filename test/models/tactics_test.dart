@@ -1,3 +1,5 @@
+import 'dart:math';
+
 import 'package:flutter_test/flutter_test.dart';
 import 'package:football_manager_sim/core/constants/tactic_definitions.dart';
 import 'package:football_manager_sim/core/models/player.dart';
@@ -9,6 +11,10 @@ import '../helpers/test_hive.dart';
 /// has the last word, and a formation change carries the picks across.
 void main() {
   List<Player> freshSquad() => stubLeagueDatabase(1).teams.first.squad;
+
+  /// Distinct OVRs so the assistant's pecking order is testable.
+  List<Player> distinctSquad() =>
+      stubPlayerDatabase(random: Random(1)).teams.first.squad;
 
   group('resolveFormationSlots', () {
     test('an empty selection is the assistant\'s pick', () {
@@ -166,6 +172,104 @@ void main() {
       // The body the shape back-filled into the goal slot is no keeper, so he
       // returns to the outfield list the engine fields, exactly as before.
       expect(lineup.outfield, hasLength(11));
+    });
+  });
+
+  group('resolveBenchSlots', () {
+    test('the automatic bench leads with keeper cover', () {
+      final squad = [...distinctSquad()];
+      final fielded = {for (final p in squad.take(11)) p.id};
+      // A spare keeper is the one thing a bench must carry.
+      squad.add(
+          stubPlayer(id: 9001, name: 'Backup Keep', position: 'GK', ovr: 60));
+
+      final bench = resolveBenchSlots(squad, fielded, const []);
+      expect(bench, hasLength(6), reason: 'every spare fits');
+      expect(bench.first.player!.name, 'Backup Keep',
+          reason: 'the automatic bench always names a keeper first');
+      expect(bench.every((slot) => !slot.manual), isTrue);
+      expect(bench.every((slot) => !fielded.contains(slot.player!.id)), isTrue,
+          reason: 'nobody starts and sits on the bench');
+      final rest = [for (final slot in bench.skip(1)) slot.player!];
+      for (var i = 1; i < rest.length; i++) {
+        expect(rest[i - 1].ovr, greaterThanOrEqualTo(rest[i].ovr),
+            reason: 'after the keeper the strongest spares come first');
+      }
+    });
+
+    test('stored picks are honoured, injured or not', () {
+      final squad = distinctSquad();
+      final fielded = {for (final p in squad.take(11)) p.id};
+      final pick = squad[12]; // a spare full-back
+      pick.isInjured = true;
+
+      final bench = resolveBenchSlots(squad, fielded, [pick.id]);
+      expect(bench.first.player!.id, pick.id);
+      expect(bench.first.manual, isTrue);
+      expect(bench.first.player!.isInjured, isTrue,
+          reason: 'the manager may keep an injured player on the bench');
+      expect(bench, hasLength(5));
+      final ids = [for (final slot in bench) slot.player!.id];
+      expect(ids.toSet().length, ids.length,
+          reason: 'nobody is named twice');
+    });
+
+    test('a pick who left the club quietly returns to the assistant', () {
+      final squad = distinctSquad();
+      final fielded = {for (final p in squad.take(11)) p.id};
+      final bench = resolveBenchSlots(squad, fielded, [424242]);
+      expect(bench, hasLength(5));
+      expect(bench.every((slot) => !slot.manual), isTrue);
+      expect(bench.every((slot) => slot.player != null), isTrue);
+    });
+
+    test('a thin squad names what it has', () {
+      final squad = distinctSquad().take(13).toList(); // a bare eleven + 2
+      final fielded = {for (final p in squad.take(11)) p.id};
+      final bench = resolveBenchSlots(squad, fielded, const []);
+      expect(bench, hasLength(2));
+    });
+  });
+
+  group('bench picks are reserved from the XI', () {
+    test('a reserved player is never selected into the XI', () {
+      final squad = distinctSquad();
+      final striker = squad[15]; // the top-rated outfielder
+      final slots = resolveFormationSlots(
+        squad,
+        Formation.fourFourTwo,
+        const [],
+        reservedIds: {striker.id},
+      );
+      expect(
+        [
+          for (final s in slots)
+            if (s.player != null) s.player!.id,
+        ],
+        isNot(contains(striker.id)),
+        reason: 'he is on the bench, not on the pitch',
+      );
+      expect(slots.where((s) => s.player != null), hasLength(11),
+          reason: 'the next best body takes his place');
+    });
+
+    test('match lineups honour the reservation too', () {
+      final squad = distinctSquad();
+      final striker = squad[15];
+      final lineup = resolveMatchLineup(
+        squad,
+        Formation.fourFourTwo,
+        const [],
+        reservedIds: {striker.id},
+      );
+      expect(lineup.outfield.map((p) => p.id), isNot(contains(striker.id)));
+      expect(
+        {
+          if (lineup.goalkeeper != null) lineup.goalkeeper!.id,
+          for (final p in lineup.outfield) p.id,
+        },
+        hasLength(11),
+      );
     });
   });
 

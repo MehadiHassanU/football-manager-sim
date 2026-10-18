@@ -317,6 +317,7 @@ void main() {
           {'name': 'Kai Vega', 'potential': 88},
         ],
         'startXI': [1, 2, 3],
+        'benchIds': [4, 5],
         'savedTactics': [
           {'name': 'Press High', 'tactic': const Tactic().toJson()},
         ],
@@ -326,6 +327,7 @@ void main() {
       expect(blob, isNotNull);
       expect((blob!['youthPlayers'] as List).length, 1);
       expect((blob['startXI'] as List).cast<int>(), [1, 2, 3]);
+      expect((blob['benchIds'] as List).cast<int>(), [4, 5]);
       expect((blob['savedTactics'] as List).first['name'], 'Press High');
     });
 

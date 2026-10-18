@@ -59,7 +59,13 @@ class MatchResult {
   final int homeGoals;
   final int awayGoals;
   final List<MatchEvent> events;
-  final List<PlayerRating> playerRatings;
+
+  /// Who played for each side and how they did. Kept apart so the career can
+  /// slice the manager's own side out of the report without guessing where
+  /// one list ends and the next begins (substitutes make the sides uneven).
+  final List<PlayerRating> homeRatings;
+  final List<PlayerRating> awayRatings;
+
   final List<double> homeMomentum;
   final List<double> awayMomentum;
   final String fullTimeCommentary;
@@ -70,11 +76,15 @@ class MatchResult {
     required this.homeGoals,
     required this.awayGoals,
     required this.events,
-    required this.playerRatings,
+    this.homeRatings = const [],
+    this.awayRatings = const [],
     required this.homeMomentum,
     required this.awayMomentum,
     required this.fullTimeCommentary,
   });
+
+  /// Every rating, home side first, for screens that show one list.
+  List<PlayerRating> get playerRatings => [...homeRatings, ...awayRatings];
 
   bool get homeWon => homeGoals > awayGoals;
   bool get awayWon => awayGoals > homeGoals;

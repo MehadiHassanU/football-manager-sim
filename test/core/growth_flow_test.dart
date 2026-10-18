@@ -88,7 +88,6 @@ MatchResult _userWin(Fixture fixture, PlayerDatabase db, String userId) {
     homeGoals: home ? 1 : 0,
     awayGoals: home ? 0 : 1,
     events: const [],
-    playerRatings: const [],
     homeMomentum: const [],
     awayMomentum: const [],
     fullTimeCommentary: '',

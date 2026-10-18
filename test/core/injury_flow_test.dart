@@ -89,7 +89,6 @@ MatchResult _userWin(
     homeGoals: home ? 1 : 0,
     awayGoals: home ? 0 : 1,
     events: events,
-    playerRatings: const [],
     homeMomentum: const [],
     awayMomentum: const [],
     fullTimeCommentary: '',

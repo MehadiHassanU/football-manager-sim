@@ -24,7 +24,6 @@ void main() {
             awayScore: 0,
           ),
         ],
-        playerRatings: const [],
         homeMomentum: const [],
         awayMomentum: const [],
         fullTimeCommentary: 'Full-time: 3 - 1',

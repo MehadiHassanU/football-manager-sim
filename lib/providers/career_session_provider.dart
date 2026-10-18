@@ -39,6 +39,7 @@ class CareerSession {
     required this.season,
     this.tactic = const Tactic(),
     List<int>? startXI,
+    List<int>? benchIds,
     List<int>? userResults,
     List<YouthPlayer>? youthPlayers,
     this.boardNote = '',
@@ -46,6 +47,7 @@ class CareerSession {
     List<String>? trophies,
     Map<int, int>? worldGrowth,
   })  : startXI = startXI ?? [],
+        benchIds = benchIds ?? [],
         userResults = userResults ?? [],
         youthPlayers = youthPlayers ?? [],
         transferDesk = transferDesk ?? TransferDesk(),
@@ -61,6 +63,10 @@ class CareerSession {
   /// current formation's `kFormationLayouts` order (0 = the assistant picks
   /// that slot, empty = a fully automatic XI). Carried in the save blob.
   List<int> startXI;
+
+  /// The manager's stored bench picks, sparse and bench-slot-indexed like
+  /// [startXI] (0 = the assistant picks the spot, empty = fully automatic).
+  List<int> benchIds;
 
   /// The user's club results this season (last 10), used for the form guide.
   final List<int> userResults;
@@ -110,6 +116,7 @@ class CareerSession {
         season: season,
         tactic: tactic,
         startXI: startXI,
+        benchIds: benchIds,
         userResults: userResults,
         youthPlayers: youthPlayers,
         boardNote: boardNote,
@@ -233,6 +240,7 @@ Future<bool> saveCareerNow(WidgetRef ref) async {
           '${entry.key}': entry.value,
       },
       'startXI': List<int>.from(session.startXI),
+      'benchIds': List<int>.from(session.benchIds),
       'shortlist': ref.read(shortlistProvider).toList(),
       'transferOffers': ref.read(transferOffersProvider),
       'savedTactics': ref.read(savedTacticsProvider),
@@ -300,6 +308,10 @@ Future<bool> tryRestoreCareer(WidgetRef ref) async {
       final xi = blob['startXI'];
       if (xi is List) {
         session.startXI.addAll(xi.whereType<int>());
+      }
+      final bench = blob['benchIds'];
+      if (bench is List) {
+        session.benchIds.addAll(bench.whereType<int>());
       }
       final shortlist = blob['shortlist'];
       if (shortlist is List) {
@@ -539,6 +551,7 @@ CareerSession _rebuildSession(CareerSession session, SeasonState season) {
     season: season,
     tactic: session.tactic,
     startXI: session.startXI,
+    benchIds: session.benchIds,
   );
   updated.userResults.addAll(session.userResults);
   updated.trophies.addAll(session.trophies);
@@ -549,15 +562,12 @@ CareerSession _rebuildSession(CareerSession session, SeasonState season) {
   return updated;
 }
 
-/// Minutes per player from the manager's side of the match report; the
-/// simulator returns home ratings first and away ratings second.
+/// Minutes per player from the manager's side of the match report.
 Map<String, int> _minutesByName(
   MatchResult result, {
   required bool userIsHome,
 }) {
-  final ratings = userIsHome
-      ? result.playerRatings.take(11)
-      : result.playerRatings.skip(11);
+  final ratings = userIsHome ? result.homeRatings : result.awayRatings;
   return {for (final rating in ratings) rating.playerName: rating.minutes};
 }
 
@@ -658,18 +668,17 @@ void _developTrainingWeek(
 
 /// Folds the match's rating list into the squad's appearance totals.
 ///
-/// The simulator returns home ratings first and away ratings second, so the
-/// manager's own eleven is sliced by which side he was on. Minutes were never
-/// recorded at all before this, which is why games played sat at zero for a
-/// whole career and the squad's mood had nothing to react to.
+/// The report keeps each side's ratings apart, so the manager's own list is
+/// simply the side he was on — no slicing by eleven, which matters now that
+/// substitutes and keepers are rated too. Minutes were never recorded at all
+/// before this, which is why games played sat at zero for a whole career and
+/// the squad's mood had nothing to react to.
 void _recordAppearances(
   Team team,
   MatchResult result, {
   required bool userIsHome,
 }) {
-  final ratings = userIsHome
-      ? result.playerRatings.take(11)
-      : result.playerRatings.skip(11);
+  final ratings = userIsHome ? result.homeRatings : result.awayRatings;
   final byName = {for (final p in team.squad) p.name: p};
   for (final rating in ratings) {
     if (rating.minutes <= 0) continue;
