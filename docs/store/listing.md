@@ -34,6 +34,16 @@ and momentum swings unfold in real time with a live event feed. At
 half-time, step into the dressing room and set your instructions for
 the matches ahead.
 
+CUPS AND CONTINENTAL NIGHTS
+Every country runs its real knockout cups — the FA Cup and EFL Cup,
+the Coppa Italia, the Copa del Rey, the DFB-Pokal and more — with
+proper rounds, seeded draws and a trophy at the end. Finish high
+enough and the midweek lights come on: the Champions League, Europa
+League and Conference League in Europe, the Libertadores and
+Sudamericana in South America, and the CONCACAF and AFC showpieces.
+A league phase sorts the field before two-legged knockouts and a
+single final. Every round pays, and every trophy goes in the cabinet.
+
 TOTAL TACTICAL CONTROL
 Playing style and tempo shape how your side takes the game to the
 opposition, while formation decides who takes the field. Set your
@@ -86,11 +96,10 @@ Initial release of Touchline Legend.
 ## Release notes — current build
 
 ```
-• Sponsorships: choose your kit deals from live offers, each with its own criteria and performance bonus
-• New Sponsorships desk on Home — the money, every bid, and one tap to sign
-• Optional rewarded video refreshes a slot's offers. No banners, no pop-ups, no ads during matches
-• Transfer market moved to the bottom bar: one tap from anywhere
-• Goals and assists now follow the ratings: defenders no longer top the scoring charts
+• Continental football: Champions League, Europa, Conference, Libertadores, Sudamericana, CONCACAF and AFC with league phases and two-legged knockouts
+• Real domestic cups for every country — proper rounds, seeded draws, trophy cabinet
+• Sponsorships with rewarded-ad rerolls; transfer market on the bottom bar
+• Goals and assists follow the ratings; cups on the Calendar
 • Minor fixes and improvements
 ```
 

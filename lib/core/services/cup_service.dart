@@ -1,6 +1,7 @@
 import 'dart:math';
 
 import '../data/competition_catalog.dart';
+import '../models/continental.dart';
 import '../models/cup.dart';
 import '../models/fixture.dart';
 import '../models/season.dart';
@@ -82,6 +83,11 @@ class CupService {
   ///
   /// Returns the cups in catalog order (primary cup first). The caller stores
   /// them on `SeasonState.cups`.
+  ///
+  /// [continental] lists any continental competitions the same season should
+  /// carry. They are scheduled in the same pass as the domestic cups — that
+  /// is what keeps every absolute anchor valid — and their league-phase
+  /// fixtures, which are known at the draw, are spliced in before returning.
   static List<CupState> attachCompetitions({
     required List<List<Fixture>> rounds,
     required List<Team> teams,
@@ -89,12 +95,14 @@ class CupService {
     required int currentYear,
     String? championId,
     String? cupWinnerId,
+    List<ContinentalRequest> continental = const [],
   }) {
     final catalog = CompetitionCatalog.forLeague(leagueId);
     if (catalog == null) {
       // A league outside the catalog (test stubs, continental pseudo-leagues)
       // still gets the legacy single cup over its own clubs, so no career is
-      // ever left without a knockout competition.
+      // ever left without a knockout competition. Continental requests only
+      // exist for catalogued top flights, so there is nothing to place here.
       final leagueClubIds = [
         for (final team in teams)
           if (team.leagueId == leagueId) team.id,
@@ -108,28 +116,33 @@ class CupService {
       return legacy == null ? const [] : [legacy];
     }
 
-    final pool = teams
-        .where((t) => catalog.leagues.contains(t.leagueId))
-        .toList();
-    if (pool.length < 4) return const [];
+    final pool =
+        teams.where((t) => catalog.leagues.contains(t.leagueId)).toList();
 
     final plans = <_CupPlan>[];
-    for (final template in catalog.cups) {
-      final plan = _planFor(
-        template: template,
-        catalog: catalog,
-        pool: pool,
-        allTeams: teams,
-        leagueId: leagueId,
-        currentYear: currentYear,
-        championId: championId,
-        cupWinnerId: cupWinnerId,
-      );
-      if (plan != null) plans.add(plan);
+    if (pool.length >= 4) {
+      for (final template in catalog.cups) {
+        final plan = _planFor(
+          template: template,
+          catalog: catalog,
+          pool: pool,
+          allTeams: teams,
+          leagueId: leagueId,
+          currentYear: currentYear,
+          championId: championId,
+          cupWinnerId: cupWinnerId,
+        );
+        if (plan != null) plans.add(plan);
+      }
     }
-    if (plans.isEmpty) return const [];
 
-    _placeOnCalendar(rounds, plans);
+    _placeOnCalendar(rounds, plans, continental);
+    for (final request in continental) {
+      for (var k = 0; k < request.leagueAnchors.length; k++) {
+        rounds[request.leagueAnchors[k]] =
+            List<Fixture>.of(request.leagueSchedule[k]);
+      }
+    }
     final drawn = <CupState>[];
     for (final plan in plans) {
       final cup = plan.cup;
@@ -137,8 +150,8 @@ class CupService {
       // nowhere to splice a bracket: drop the cup instead of crashing.
       if (cup.anchors.isEmpty) continue;
       final ids = [...?cup.entrants[0]]..shuffle(
-        Random('$leagueId:$currentYear:${cup.id}:round0'.hashCode.abs()),
-      );
+          Random('$leagueId:$currentYear:${cup.id}:round0'.hashCode.abs()),
+        );
       if (ids.length < 2) continue;
       rounds[cup.anchors[0]] = _drawRound(ids, cup, 0, cup.anchors[0]);
       drawn.add(cup);
@@ -176,8 +189,8 @@ class CupService {
         if (cup.byes[k] != null) cup.byes[k]!,
         ...?cup.entrants[k + 1],
       ];
-      season.rounds[cup.anchors[k + 1]] = _drawRound(contenders, cup, k + 1,
-          cup.anchors[k + 1]);
+      season.rounds[cup.anchors[k + 1]] =
+          _drawRound(contenders, cup, k + 1, cup.anchors[k + 1]);
       return;
     }
   }
@@ -210,9 +223,7 @@ class CupService {
         '${season.leagueId}:${season.currentYear}:cup-final-bye:${cup.id}'
             .hashCode
             .abs();
-    return Random(seed).nextBool() && bye != matchWinner
-        ? bye
-        : matchWinner;
+    return Random(seed).nextBool() && bye != matchWinner ? bye : matchWinner;
   }
 
   /// Whether [cup]'s final has been drawn and played.
@@ -339,8 +350,8 @@ class CupService {
       if (clubs.length < 4) return null;
       // A secondary cup is a straight knockout over its invited field.
       final entrants = {
-        0: [for (final team in clubs) team.id]
-          ..shuffle(Random('$leagueId:$currentYear:${template.id}'.hashCode.abs())),
+        0: [for (final team in clubs) team.id]..shuffle(
+            Random('$leagueId:$currentYear:${template.id}'.hashCode.abs())),
       };
       return _buildPlan(
         template: template,
@@ -353,8 +364,8 @@ class CupService {
     if (clubs.length < 4) return null;
     if (clubs.length == field) {
       final entrants = {
-        0: [for (final team in clubs) team.id]
-          ..shuffle(Random('$leagueId:$currentYear:${template.id}'.hashCode.abs())),
+        0: [for (final team in clubs) team.id]..shuffle(
+            Random('$leagueId:$currentYear:${template.id}'.hashCode.abs())),
       };
       return _buildPlan(
         template: template,
@@ -486,7 +497,16 @@ class CupService {
   /// opening weekend). Cup rounds are spread through the season; two
   /// competitions never share a gap, so no week carries two knockout ties.
   /// The super cup takes gap 0 as the curtain-raiser.
-  static void _placeOnCalendar(List<List<Fixture>> rounds, List<_CupPlan> plans) {
+  ///
+  /// Continental rounds are placed in the same pass, in gaps no domestic cup
+  /// claimed, so a European night never lands in the same week as a cup tie.
+  /// Their league-phase fixtures are copied in by the caller once the whole
+  /// insertion is done.
+  static void _placeOnCalendar(
+    List<List<Fixture>> rounds,
+    List<_CupPlan> plans,
+    List<ContinentalRequest> continental,
+  ) {
     final leagueRounds = rounds.length;
     if (leagueRounds == 0) return;
     final occupied = <int>{};
@@ -524,8 +544,34 @@ class CupService {
       gapOf[plan] = gaps;
     }
 
+    // Continental rounds: one midweek per competition round, spread evenly
+    // through the weeks the domestic cups did not take.
+    final continentalGaps = <ContinentalRequest, List<int>>{};
+    for (final request in continental) {
+      final count = request.leagueRounds + 9;
+      final gaps = <int>[];
+      for (var k = 0; k < count; k++) {
+        var target = ((k + 1) * leagueRounds) ~/ (count + 1);
+        target = target.clamp(1, leagueRounds);
+        var guard = 0;
+        while (occupied.contains(target) && guard < leagueRounds * 2) {
+          target++;
+          if (target > leagueRounds) target = 1;
+          guard++;
+        }
+        occupied.add(target);
+        gaps.add(target);
+      }
+      continentalGaps[request] = gaps;
+    }
+
     final gapCounts = <int, int>{};
     for (final entry in gapOf.entries) {
+      for (final gap in entry.value) {
+        gapCounts[gap] = (gapCounts[gap] ?? 0) + 1;
+      }
+    }
+    for (final entry in continentalGaps.entries) {
       for (final gap in entry.value) {
         gapCounts[gap] = (gapCounts[gap] ?? 0) + 1;
       }
@@ -549,9 +595,27 @@ class CupService {
       }
       cup.anchors.addAll(anchors);
     }
+    for (final request in continental) {
+      final anchors = <int>[];
+      for (final gap in continentalGaps[request]!) {
+        final index = nextInGap[gap] ?? 0;
+        nextInGap[gap] = index + 1;
+        anchors.add(gapStart[gap]! + index);
+      }
+      request.leagueAnchors
+        ..clear()
+        ..addAll(anchors.take(request.leagueRounds));
+      request.knockoutAnchors
+        ..clear()
+        ..addAll(anchors.skip(request.leagueRounds));
+    }
 
     final allAnchors = <int>[
       for (final plan in plans) ...plan.cup.anchors,
+      for (final request in continental) ...[
+        ...request.leagueAnchors,
+        ...request.knockoutAnchors,
+      ],
     ]..sort();
     for (final anchor in allAnchors) {
       rounds.insert(anchor, <Fixture>[]);
@@ -627,17 +691,16 @@ class CupService {
           ? fixture.homeTeamId
           : fixture.awayTeamId;
     }
-    final seed =
-        '${season.leagueId}:${season.currentYear}:cup-pens:'
-                '${fixture.homeTeamId}:${fixture.awayTeamId}'
-            .hashCode
-            .abs();
+    final seed = '${season.leagueId}:${season.currentYear}:cup-pens:'
+            '${fixture.homeTeamId}:${fixture.awayTeamId}'
+        .hashCode
+        .abs();
     return Random(seed).nextBool() ? fixture.homeTeamId : fixture.awayTeamId;
   }
 
   /// The shootout line for a finished drawn cup tie, from [teamId]'s point of
-  /// view — or null when the tie needs no deciding (a league fixture, or
-  /// somebody won it in normal time).
+  /// view — or null when the tie needs no deciding (a league fixture, a
+  /// continental leg, or somebody won it in normal time).
   static ({String text, bool advanced})? shootoutNote({
     required SeasonState season,
     required Fixture tie,
@@ -646,6 +709,11 @@ class CupService {
     required int awayGoals,
   }) {
     if (tie.competition == 'league' || homeGoals != awayGoals) return null;
+    // Only a domestic cup tie is decided by a shootout at this point:
+    // continental legs ride the aggregate, so the note must never speak for
+    // one even when the competition id has never been a cup.
+    final domestic = season.cups.any((cup) => cup.anchors.contains(tie.round));
+    if (!domestic) return null;
     return tieWinner(season, tie) == teamId
         ? (text: 'Through on penalties', advanced: true)
         : (text: 'Knocked out on penalties', advanced: false);

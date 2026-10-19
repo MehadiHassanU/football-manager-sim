@@ -11,6 +11,7 @@ import '../../core/models/match.dart';
 import '../../core/models/player.dart';
 import '../../core/models/tactics.dart';
 import '../../core/models/team.dart';
+import '../../core/services/continental_service.dart';
 import '../../core/services/cup_service.dart';
 import '../../core/services/match_simulator_service.dart';
 import '../../providers/career_session_provider.dart';
@@ -740,8 +741,8 @@ class _SubstitutionSheetState extends State<_SubstitutionSheet> {
       _on != null &&
       _off!.id != _on!.id;
 
-  List<Player> get _benchByQuality => [...widget.bench]
-    ..sort((a, b) => b.ovr.compareTo(a.ovr));
+  List<Player> get _benchByQuality =>
+      [...widget.bench]..sort((a, b) => b.ovr.compareTo(a.ovr));
 
   void _submit() {
     if (!_canSubmit) return;
@@ -797,8 +798,7 @@ class _SubstitutionSheetState extends State<_SubstitutionSheet> {
                                 title: Text(player.name),
                                 subtitle: Text(
                                     '${player.primaryPosition} · ${player.ovr} OVR'),
-                                trailing:
-                                    const Icon(Icons.add_circle_outline),
+                                trailing: const Icon(Icons.add_circle_outline),
                                 onTap: () => Navigator.of(context).pop(
                                   _Substitution(off: forced, on: player),
                                 ),
@@ -1349,7 +1349,8 @@ class _HalfTimeSheet extends StatelessWidget {
 }
 
 class _FullTime extends StatelessWidget {
-  const _FullTime({required this.result, this.shootout, this.userIsHome = true});
+  const _FullTime(
+      {required this.result, this.shootout, this.userIsHome = true});
 
   final MatchResult result;
 
@@ -1491,10 +1492,14 @@ String? _cupTieLabel(CareerSession session) {
   final season = session.season;
   final fixture =
       season.userFixtureForRound(season.currentMatchday, session.team.id);
-  final cup = season.cupAt(season.currentMatchday);
-  if (fixture == null || cup == null || fixture.competition == 'league') {
-    return null;
+  if (fixture == null || fixture.competition == 'league') return null;
+  final continental =
+      ContinentalService.labelAt(season, season.currentMatchday);
+  if (continental != null) {
+    return '${continental.$1.name} · ${continental.$2}';
   }
+  final cup = season.cupAt(season.currentMatchday);
+  if (cup == null) return null;
   final cupRound = cup.anchors.indexOf(season.currentMatchday);
   return '${cup.name} · ${CupService.roundNameOf(season, cupRound, cup: cup)}';
 }
@@ -1507,6 +1512,18 @@ String? _cupTieLabel(CareerSession session) {
 ) {
   final fixture = session.season.currentFixtureFor(session.team.id);
   if (fixture == null) return null;
+  final continental = ContinentalService.labelAt(
+      session.season, session.season.currentMatchday);
+  if (continental != null) {
+    return ContinentalService.legNote(
+      season: session.season,
+      comp: continental.$1,
+      fixture: fixture,
+      teamId: session.team.id,
+      homeGoals: result.homeGoals,
+      awayGoals: result.awayGoals,
+    );
+  }
   return CupService.shootoutNote(
     season: session.season,
     tie: fixture,

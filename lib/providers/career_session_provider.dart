@@ -5,6 +5,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:uuid/uuid.dart';
 
+import '../core/models/continental.dart';
 import '../core/models/cup.dart';
 import '../core/models/fixture.dart';
 import '../core/models/manager.dart';
@@ -17,7 +18,9 @@ import '../core/models/tactics.dart';
 import '../core/models/transfer.dart';
 import '../core/models/youth_player.dart';
 import '../core/constants/game_constants.dart';
+import '../core/data/continental_catalog.dart';
 import '../core/services/cup_service.dart';
+import '../core/services/continental_service.dart';
 import '../core/services/development_service.dart';
 import '../core/services/financial_service.dart';
 import '../core/services/injury_service.dart';
@@ -60,8 +63,7 @@ class CareerSession {
         trophies = trophies ?? [],
         worldGrowth = worldGrowth ?? <int, int>{},
         sponsorships = sponsorships ?? <Sponsorship>[],
-        sponsorshipOffers =
-            sponsorshipOffers ?? <SponsorshipOffer>[];
+        sponsorshipOffers = sponsorshipOffers ?? <SponsorshipOffer>[];
 
   final Manager manager;
   final Team team;
@@ -202,22 +204,35 @@ void startNewCareer(
   // DFL-Supercup in Germany, and so on. The FA Cup pool is every division in
   // the country, so a League Two club really can draw a Premier League side;
   // the top flight joins the round of 64 after a preliminary round.
+  final year = DateTime.now().year;
+  final continentalRequest = ContinentalService.buildRequest(
+    teams: db?.teams ?? [team],
+    leagueId: team.leagueId,
+    userId: team.id,
+    year: year,
+  );
   final cups = CupService.attachCompetitions(
     rounds: rounds,
     teams: db?.teams ?? [team],
     leagueId: team.leagueId,
-    currentYear: DateTime.now().year,
+    currentYear: year,
+    continental: [if (continentalRequest != null) continentalRequest],
   );
+  final continentalState = continentalRequest?.toState();
+  final continental = <ContinentalState>[
+    if (continentalState != null) continentalState,
+  ];
 
   var season = SeasonState(
     leagueId: team.leagueId,
     currentMatchday: 0,
-    currentYear: DateTime.now().year,
+    currentYear: year,
     isPreSeason: false,
     isWinterBreak: false,
     records: {for (final t in leagueRivals) t.id: LeagueRecord()},
     rounds: rounds,
     cups: cups,
+    continental: continental,
   );
   season = _autoOpenSuperCup(season, db?.teams ?? [team], team.id);
   final session = CareerSession(manager: manager, team: team, season: season);
@@ -588,6 +603,7 @@ BoardVerdict? applyMatchResult(WidgetRef ref, MatchResult result) {
     // credited so far would be quietly dropped on each matchday.
     scorers: season.scorers,
     cups: season.cups,
+    continental: season.continental,
   );
 
   final updated = _rebuildSession(session, updatedSeason);
@@ -794,9 +810,7 @@ void _recordAppearances(
   final byName = {for (final p in team.squad) p.name: p};
   for (final rating in ratings) {
     if (rating.minutes <= 0) continue;
-    final player = (rating.playerId == null
-            ? null
-            : byId[rating.playerId]) ??
+    final player = (rating.playerId == null ? null : byId[rating.playerId]) ??
         byName[rating.playerName];
     if (player == null) continue;
     player.gamesPlayed += 1;
@@ -809,8 +823,7 @@ void _recordAppearances(
     // Form is the rolling match rating; morale drifts with how he played, and
     // a bad individual display hurts regardless of the result.
     player.form = ((player.form * 2 + rating.rating) / 3).round().clamp(1, 10);
-    final moraleShift =
-        rating.rating >= 7 ? 4 : (rating.rating <= 5 ? -5 : 0);
+    final moraleShift = rating.rating >= 7 ? 4 : (rating.rating <= 5 ? -5 : 0);
     player.morale = (player.morale + moraleShift).clamp(0, 100);
   }
 }
@@ -965,8 +978,7 @@ void promisePlayingTime(WidgetRef ref, Player player) {
 }
 
 /// True when the player has complained about his playing time.
-bool unsettledOf(Player player) =>
-    player.hiddenAttributes['unsettled'] is int;
+bool unsettledOf(Player player) => player.hiddenAttributes['unsettled'] is int;
 
 /// Runs the transfer market's own clock after a matchday.
 ///
@@ -1063,8 +1075,8 @@ void advanceTransferDesk(WidgetRef ref, CareerSession session) {
             p.hiddenAttributes['loanListed'] == true)
         .length;
     if (atMinimum && listedCount > 0) {
-      final alreadyTold = desk.news.any(
-          (n) => n.type == 'minimum' && n.matchday == matchday);
+      final alreadyTold =
+          desk.news.any((n) => n.type == 'minimum' && n.matchday == matchday);
       if (!alreadyTold) {
         desk.addNews(TransferNewsItem(
           type: 'minimum',
@@ -1156,8 +1168,8 @@ void advanceTransferDesk(WidgetRef ref, CareerSession session) {
   // did. Computed from the ledger, so the numbers are the moves the world
   // really made rather than a claim the feed invented.
   final shut = TransferWindow.on(season, matchday - 1);
-  final summarised = desk.news.any(
-      (n) => n.type == 'summary' && n.matchday == matchday);
+  final summarised =
+      desk.news.any((n) => n.type == 'summary' && n.matchday == matchday);
   if (shut.isOpen &&
       shut.isDeadlineDay &&
       matchday > 0 &&
@@ -1197,8 +1209,14 @@ void _boardJudgesTheWindow(CareerSession session, TransferWindow shut) {
 const double _windowInactivityPenalty = 10.0;
 
 /// The user's window business, counted straight from the ledger.
-({int arrivals, int loansIn, int departures, int loansOut, int spent, int received})
-    _windowBusiness(CareerSession session, TransferWindow shut) {
+({
+  int arrivals,
+  int loansIn,
+  int departures,
+  int loansOut,
+  int spent,
+  int received
+}) _windowBusiness(CareerSession session, TransferWindow shut) {
   final windowMoves = session.transferDesk.ledger.where((m) =>
       m.kind != 'loanReturn' &&
       m.year == session.season.currentYear &&
@@ -1272,16 +1290,16 @@ void _advanceRivalMarket(
   };
 
   final deals = ref.read(rivalTransferServiceProvider).generateMoves(
-    teams: db.teams,
-    userClub: session.team.name,
-    seedKey: season.leagueId,
-    seasonYear: season.currentYear,
-    matchday: matchday,
-    priorityBuyers: priorityBuyers,
-    busyPlayers: busyPlayers,
-    activityMultiplier:
-        difficultyStrengthMultiplier(ref.read(difficultyProvider)),
-  );
+        teams: db.teams,
+        userClub: session.team.name,
+        seedKey: season.leagueId,
+        seasonYear: season.currentYear,
+        matchday: matchday,
+        priorityBuyers: priorityBuyers,
+        busyPlayers: busyPlayers,
+        activityMultiplier:
+            difficultyStrengthMultiplier(ref.read(difficultyProvider)),
+      );
 
   for (final deal in deals) {
     // Defensive: the manager's squad is never sellable by the rival clock,
@@ -1455,9 +1473,8 @@ SeasonState _autoOpenSuperCup(
   List<Team> teams,
   String userId,
 ) {
-  final superCup = season.cups
-      .where((cup) => cup.kind == CupKind.superCup)
-      .firstOrNull;
+  final superCup =
+      season.cups.where((cup) => cup.kind == CupKind.superCup).firstOrNull;
   if (superCup == null || superCup.anchors.isEmpty) return season;
   final anchor = superCup.anchors.first;
   if (anchor >= season.rounds.length) return season;
@@ -1483,6 +1500,7 @@ SeasonState _autoOpenSuperCup(
     rounds: season.rounds,
     scorers: season.scorers,
     cups: season.cups,
+    continental: season.continental,
   );
 }
 
@@ -1517,7 +1535,8 @@ void _simulateRemainingFixtures(
 }
 
 /// The board's verdict on the manager after a matchday.
-class BoardVerdict {  const BoardVerdict({
+class BoardVerdict {
+  const BoardVerdict({
     required this.sacked,
     required this.risk,
     required this.reason,
@@ -1579,7 +1598,8 @@ BoardVerdict? evaluateBoard(WidgetRef ref, CareerSession session) {
       : results.sublist(results.length - _boardFormWindow);
   final avgPoints = recent.reduce((a, b) => a + b) / recent.length;
   final expected = boardExpectedPoints(session.team.reputation);
-  final delta = (expected - avgPoints) * boardSensitivity(session.team.reputation);
+  final delta =
+      (expected - avgPoints) * boardSensitivity(session.team.reputation);
   var risk = (session.manager.sackablePercent + delta).clamp(0.0, 100.0);
 
   final sacked =
@@ -1678,6 +1698,7 @@ void advancePastBye(WidgetRef ref) {
     rounds: session.season.rounds,
     scorers: session.season.scorers,
     cups: session.season.cups,
+    continental: session.season.continental,
   );
   final updated = _rebuildSession(session, season);
   updated.team.leaguePosition = season.positionOf(session.team.id);
@@ -1704,9 +1725,80 @@ void advancePastBye(WidgetRef ref) {
 /// an EFL Cup run settle independently, and the super cup gets its own line in
 /// the cabinet.
 ///
+/// Continental league phase and knockouts: draw whatever has become
+/// available, pay the club its match money, and record the trophy.
+///
+/// Runs before the domestic settlement so a European night is settled even on
+/// a week whose domestic cup has already finished. Idempotent through
+/// [ContinentalState.rewardedRounds]: replaying a matchday re-derives the
+/// same winners without paying the prize money twice.
+void _settleContinentalAfterRound(CareerSession session) {
+  final season = session.season;
+  if (season.continental.isEmpty) return;
+  ContinentalService.progress(season);
+
+  final user = session.team;
+  for (final comp in season.continental) {
+    if (!comp.clubIds.contains(user.id)) continue;
+
+    final newlySettled = <int>{};
+    for (final anchor in [...comp.leagueAnchors, ...comp.knockoutAnchors]) {
+      if (comp.rewardedRounds.contains(anchor)) continue;
+      final round = season.rounds[anchor];
+      if (round.isEmpty || round.any((f) => !f.played)) continue;
+      final fixture = round.where((f) => f.involves(user.id)).firstOrNull;
+      if (fixture == null) continue;
+      final home = fixture.isHomeFor(user.id);
+      final scored = home ? fixture.homeGoals : fixture.awayGoals;
+      final conceded = home ? fixture.awayGoals : fixture.homeGoals;
+      final prize = scored > conceded
+          ? 2400000
+          : scored == conceded
+              ? 1100000
+              : 600000;
+      user.budget += prize;
+      user.revenue += prize.toDouble();
+      comp.rewardedRounds.add(anchor);
+      newlySettled.add(anchor);
+    }
+
+    final winner = ContinentalService.winnerOf(season, comp);
+    final label = '${comp.name} ${season.currentYear}';
+    if (winner == user.id) {
+      if (!session.trophies.contains(label)) {
+        session.trophies.add(label);
+      }
+      if (newlySettled.contains(comp.knockoutAnchors.last)) {
+        session.manager.sackablePercent =
+            (session.manager.sackablePercent + _cupWinRelief).clamp(0.0, 100.0);
+        session.boardNote =
+            'Champions of ${ContinentalCatalog.regionName(comp.region)}! '
+            'The $label is in the cabinet.';
+      }
+    }
+
+    // A knockout exit is news for one matchday, not every week afterwards:
+    // only the second leg that has just settled can trigger it.
+    for (var stage = 0; stage < 4; stage++) {
+      final secondLeg = comp.knockoutAnchors[stage * 2 + 1];
+      if (!newlySettled.contains(secondLeg)) continue;
+      final firstLeg = season.rounds[comp.knockoutAnchors[stage * 2]];
+      final tie = firstLeg.where((f) => f.involves(user.id)).firstOrNull;
+      if (tie == null) continue;
+      if (ContinentalService.tieWinner(season, comp, tie) != user.id) {
+        session.boardNote = 'Out of the ${comp.name} in the '
+            '${ContinentalService.stageName(stage)}. The board expected a deep '
+            'run to go with the budget.';
+      }
+      break;
+    }
+  }
+}
+
 /// Idempotent: re-applying a matchday after a crash re-derives everything
 /// from played fixtures, and the trophy is set-guarded.
 void _settleCupAfterRound(CareerSession session) {
+  _settleContinentalAfterRound(session);
   final season = session.season;
   if (season.cups.isEmpty) return;
   CupService.progressCup(season);
@@ -1759,8 +1851,7 @@ void _settleCupAfterRound(CareerSession session) {
     if (nextFixtures.any((f) => f.involves(user.id))) continue;
     if (cup.byes[next] == user.id) continue; // drew a bye, not a knockout
 
-    session.boardNote =
-        'Out of the ${cup.name} at the '
+    session.boardNote = 'Out of the ${cup.name} at the '
         '${CupService.roundNameOf(season, settled, cup: cup)}. The board '
         'wanted a cup run to go with the budget.';
     return;
@@ -1784,6 +1875,7 @@ void resumeFromWinterBreak(WidgetRef ref) {
     rounds: session.season.rounds,
     scorers: session.season.scorers,
     cups: session.season.cups,
+    continental: session.season.continental,
   );
   final updated = _rebuildSession(session, season);
   ref.read(careerSessionProvider.notifier).state = updated;
@@ -2017,8 +2109,8 @@ void _autoSignSponsorships(CareerSession session) {
       session.sponsorshipOffers.removeWhere((o) => o.slot == slot);
       continue;
     }
-    final best =
-        service.bestOffer(service.offersForSlot(session.sponsorshipOffers, slot));
+    final best = service
+        .bestOffer(service.offersForSlot(session.sponsorshipOffers, slot));
     if (best == null) continue;
     session.sponsorships.add(service.sign(best));
     session.sponsorshipOffers.removeWhere((o) => o.slot == slot);
@@ -2787,16 +2879,28 @@ SeasonOutcome? rollIntoNextSeason(WidgetRef ref) {
   final table = season.table();
   final nationalCup =
       season.cups.where((c) => c.kind == CupKind.national).firstOrNull;
+  // Continental entry follows the finish in the league the club played last
+  // season; a promoted or relegated club starts from its reputation instead,
+  // since its old position belongs to a different division.
+  final continentalRequest = ContinentalService.buildRequest(
+    teams: db?.teams ?? [team],
+    leagueId: team.leagueId,
+    userId: team.id,
+    year: season.currentYear + 1,
+    previousPosition: season.positionOf(team.id),
+    previousLeagueId: season.leagueId,
+  );
   final nextCups = CupService.attachCompetitions(
     rounds: nextRounds,
     teams: db?.teams ?? [team],
     leagueId: team.leagueId,
     currentYear: season.currentYear + 1,
     championId: table.isEmpty ? null : table.first.teamId,
-    cupWinnerId: nationalCup == null
-        ? null
-        : CupService.winnerOf(season, nationalCup),
+    cupWinnerId:
+        nationalCup == null ? null : CupService.winnerOf(season, nationalCup),
+    continental: [if (continentalRequest != null) continentalRequest],
   );
+  final nextContinentalState = continentalRequest?.toState();
 
   final nextSeason = SeasonState(
     leagueId: team.leagueId,
@@ -2807,13 +2911,15 @@ SeasonOutcome? rollIntoNextSeason(WidgetRef ref) {
     records: {for (final t in rivals) t.id: LeagueRecord()},
     rounds: nextRounds,
     cups: nextCups,
+    continental: <ContinentalState>[
+      if (nextContinentalState != null) nextContinentalState,
+    ],
   );
 
   // Loans end with the season: borrowed players go home, loaned-out players
   // come back, and everyone's full wage is restored.
   for (final loan in [...session.transferDesk.loans]) {
-    final player =
-        db?.players.where((p) => p.id == loan.playerId).firstOrNull;
+    final player = db?.players.where((p) => p.id == loan.playerId).firstOrNull;
     if (player == null) continue;
     if (loan.toClub == team.name) {
       // Borrowed in: back to the owner.
@@ -2823,8 +2929,7 @@ SeasonOutcome? rollIntoNextSeason(WidgetRef ref) {
         ..hiddenAttributes.remove('onLoanFrom')
         ..hiddenAttributes.remove('loanUntilYear')
         ..currentTeam = loan.fromClub;
-      final owner =
-          db?.teams.where((t) => t.name == loan.fromClub).firstOrNull;
+      final owner = db?.teams.where((t) => t.name == loan.fromClub).firstOrNull;
       if (owner != null && !owner.squad.any((p) => p.id == loan.playerId)) {
         owner.squad.add(player);
       }
@@ -2858,10 +2963,8 @@ SeasonOutcome? rollIntoNextSeason(WidgetRef ref) {
   // decision — tight sanctions are what "Hard" is about.
   final openingBill = weeklyWageBill(team);
   if (openingBill > 0) {
-    team.wageBudget = max(
-        team.wageBudget,
-        openingBill *
-            wageCeilingHeadroomFactor(ref.read(difficultyProvider)));
+    team.wageBudget = max(team.wageBudget,
+        openingBill * wageCeilingHeadroomFactor(ref.read(difficultyProvider)));
   }
 
   // The close of the season is when the world ages: the squad, the academy

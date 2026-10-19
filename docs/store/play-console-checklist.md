@@ -71,6 +71,8 @@ account/decision, everything else is copy-paste from this folder.
    - Settings → Privacy Policy opens
    - Sponsorships → "Watch an ad for fresh offers" shows the rewarded video and
      refreshes that slot's offers (test unit) without leaving the screen
+   - Competitions → domestic cup bracket and, in season two, the continental
+     league-phase table render; Calendar shows the midweek dates
 3. Complete App content forms
 4. Submit for review (typical review: a few hours to ~7 days)
 

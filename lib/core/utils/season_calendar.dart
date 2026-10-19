@@ -1,6 +1,8 @@
+import '../models/continental.dart';
 import '../models/cup.dart';
 import '../models/fixture.dart';
 import '../models/season.dart';
+import '../services/continental_service.dart';
 import '../services/cup_service.dart';
 
 /// What a row of the season calendar represents.
@@ -53,7 +55,8 @@ class CalendarEntry {
   final bool isCurrent;
 
   /// Whether this row belongs to a knockout competition.
-  bool get isCup => cupName != null || (fixture?.competition ?? 'league') != 'league';
+  bool get isCup =>
+      cupName != null || (fixture?.competition ?? 'league') != 'league';
 
   /// 'FA Cup · Quarter-finals', or null on a league row.
   String? get competitionLabel {
@@ -95,7 +98,13 @@ class SeasonCalendar {
   /// The real date of [round] in [season]: Saturdays for league matchdays,
   /// Wednesdays for cup rounds.
   static DateTime dateOf(SeasonState season, int round) {
-    final anchors = <int>{for (final cup in season.cups) ...cup.anchors};
+    final anchors = <int>{
+      for (final cup in season.cups) ...cup.anchors,
+      for (final comp in season.continental) ...[
+        ...comp.leagueAnchors,
+        ...comp.knockoutAnchors,
+      ],
+    };
     var leagueBefore = 0;
     final limit = round < season.rounds.length ? round : season.rounds.length;
     for (var i = 0; i < limit; i++) {
@@ -139,15 +148,34 @@ class SeasonCalendar {
         cupOfRound[cup.anchors[k]] = (cup, k);
       }
     }
+    final continentalOfRound = <int, (ContinentalState, String)>{};
+    for (final comp in season.continental) {
+      for (var k = 0; k < comp.leagueAnchors.length; k++) {
+        continentalOfRound[comp.leagueAnchors[k]] =
+            (comp, 'League phase · Matchday ${k + 1}');
+      }
+      for (var k = 0; k < comp.knockoutAnchors.length; k++) {
+        final stage = k ~/ 2;
+        final leg = stage == 4 ? 1 : (k.isEven ? 1 : 2);
+        continentalOfRound[comp.knockoutAnchors[k]] =
+            (comp, ContinentalService.stageLabel(stage, leg));
+      }
+    }
 
     for (var round = 0; round < season.rounds.length; round++) {
       final date = dateOf(season, round);
       final cupRound = cupOfRound[round];
       final cup = cupRound?.$1;
-      final label =
-          cupRound == null ? null : CupService.roundNameOf(season, cupRound.$2, cup: cup);
+      final continentalRound = continentalOfRound[round];
+      final label = cupRound == null
+          ? null
+          : CupService.roundNameOf(season, cupRound.$2, cup: cup);
+      final competitionName = cup?.name ?? continentalRound?.$1.name;
+      final competitionLabel = label ?? continentalRound?.$2;
 
-      if (round == season.winterBreakRound && cup == null) {
+      if (round == season.winterBreakRound &&
+          cup == null &&
+          continentalRound == null) {
         // Midweek ahead of the paused round, so the list never runs backwards
         // in time, whichever row the round itself produces.
         entries.add(CalendarEntry(
@@ -164,8 +192,8 @@ class SeasonCalendar {
           date: date,
           kind: CalendarEntryKind.fixture,
           fixture: fixture,
-          cupName: cup?.name,
-          cupRoundLabel: label,
+          cupName: competitionName,
+          cupRoundLabel: competitionLabel,
           isCurrent: round == season.currentMatchday,
         ));
         continue;
@@ -194,7 +222,20 @@ class SeasonCalendar {
           cupRoundLabel: label,
           isCurrent: round == season.currentMatchday,
         ));
-      } else if (cup == null && round == season.currentMatchday) {
+      } else if (continentalRound != null &&
+          season.fixturesForRound(round).isEmpty &&
+          ContinentalService.isAlive(season, continentalRound.$1, teamId)) {
+        entries.add(CalendarEntry(
+          round: round,
+          date: date,
+          kind: CalendarEntryKind.cupSlot,
+          cupName: continentalRound.$1.name,
+          cupRoundLabel: continentalRound.$2,
+          isCurrent: round == season.currentMatchday,
+        ));
+      } else if (cup == null &&
+          continentalRound == null &&
+          round == season.currentMatchday) {
         // A league bye is only news as the current state of the season: the
         // manager needs to know this week will not be played.
         entries.add(CalendarEntry(
@@ -224,12 +265,32 @@ class SeasonCalendar {
   static const _weekdays = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 
   static const _monthNames = [
-    'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
-    'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec',
+    'Jan',
+    'Feb',
+    'Mar',
+    'Apr',
+    'May',
+    'Jun',
+    'Jul',
+    'Aug',
+    'Sep',
+    'Oct',
+    'Nov',
+    'Dec',
   ];
 
   static const _longMonthNames = [
-    'January', 'February', 'March', 'April', 'May', 'June',
-    'July', 'August', 'September', 'October', 'November', 'December',
+    'January',
+    'February',
+    'March',
+    'April',
+    'May',
+    'June',
+    'July',
+    'August',
+    'September',
+    'October',
+    'November',
+    'December',
   ];
 }

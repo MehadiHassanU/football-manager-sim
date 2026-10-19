@@ -1,3 +1,4 @@
+import 'continental.dart';
 import 'cup.dart';
 import 'fixture.dart';
 
@@ -127,10 +128,12 @@ class SeasonState {
     Map<int, ScorerRecord>? scorers,
     CupState? cup,
     List<CupState>? cups,
+    List<ContinentalState>? continental,
   })  : _totalMatchdaysOverride = totalMatchdays,
         _legacyFixturePairs = legacyFixturePairs ?? const <String>[],
         rounds = rounds ?? const <List<Fixture>>[],
         cups = cups ?? (cup == null ? const <CupState>[] : [cup]),
+        continental = continental ?? const <ContinentalState>[],
         records = records ?? <String, LeagueRecord>{},
         scorers = scorers ?? <int, ScorerRecord>{};
 
@@ -161,6 +164,11 @@ class SeasonState {
   /// seasons played before cups existed. Kept as a convenience for readers
   /// that only care about one competition — new code should prefer [cups].
   CupState? get cup => cups.isEmpty ? null : cups.first;
+
+  /// The continental competition this season carries (the manager's club is
+  /// always in it when it exists), or empty for a club that did not qualify
+  /// and for saves written before continental football.
+  final List<ContinentalState> continental;
 
   /// The cup whose round is at the absolute [round] position, if any.
   CupState? cupAt(int round) {
@@ -219,8 +227,14 @@ class SeasonState {
   /// cup date when the midpoint lands on a knockout round.
   int get winterBreakRound {
     final mid = totalMatchdays ~/ 2;
-    if (rounds.isEmpty || cups.isEmpty) return mid;
-    final anchors = <int>{for (final c in cups) ...c.anchors};
+    if (rounds.isEmpty || (cups.isEmpty && continental.isEmpty)) return mid;
+    final anchors = <int>{
+      for (final c in cups) ...c.anchors,
+      for (final c in continental) ...[
+        ...c.leagueAnchors,
+        ...c.knockoutAnchors,
+      ],
+    };
     if (!anchors.contains(mid)) return mid;
     for (var d = 1; d < rounds.length; d++) {
       if (mid + d < rounds.length && !anchors.contains(mid + d)) return mid + d;

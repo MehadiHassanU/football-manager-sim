@@ -1,4 +1,5 @@
 import 'package:hive/hive.dart';
+import '../models/continental.dart';
 import '../models/cup.dart';
 import '../models/fixture.dart';
 import '../models/season.dart';
@@ -6,7 +7,9 @@ import '../models/season.dart';
 /// Schema v2 fields remain 0-9. Field 10 is the knockout cup: nullable, so a
 /// v2 save reads back with no cup and gets one attached when its next season
 /// starts. Fixture rows themselves persist a `competition` tag inside the
-/// rounds list (field 8); older rows read back as league fixtures.
+/// rounds list (field 8); older rows read back as league fixtures. Field 13
+/// holds the continental competition, which only exists when the manager's
+/// club qualified for one.
 class SeasonStateAdapter implements TypeAdapter<SeasonState> {
   @override
   final int typeId = 3;
@@ -77,6 +80,21 @@ class SeasonStateAdapter implements TypeAdapter<SeasonState> {
       });
     }
 
+    // Continental football (Wave 5) lives in field 13; older saves read back
+    // with no continental competition, which is correct for a club that never
+    // qualified.
+    final continental = <ContinentalState>[];
+    final rawContinental = fields[13];
+    if (rawContinental is List) {
+      for (final raw in rawContinental) {
+        if (raw is Map) {
+          continental.add(
+            ContinentalState.fromJson(Map<String, dynamic>.from(raw)),
+          );
+        }
+      }
+    }
+
     return SeasonState(
       leagueId: fields[0] as String,
       currentMatchday: fields[1] as int,
@@ -90,6 +108,7 @@ class SeasonStateAdapter implements TypeAdapter<SeasonState> {
       legacyFixturePairs: legacyPairs,
       scorers: scorers,
       cups: cups,
+      continental: continental,
     );
   }
 
@@ -106,7 +125,7 @@ class SeasonStateAdapter implements TypeAdapter<SeasonState> {
   @override
   void write(BinaryWriter writer, SeasonState obj) {
     writer
-      ..writeByte(13)
+      ..writeByte(14)
       ..writeByte(0)
       ..write(obj.leagueId)
       ..writeByte(1)
@@ -142,6 +161,10 @@ class SeasonStateAdapter implements TypeAdapter<SeasonState> {
       ..writeByte(12)
       ..write([
         for (final competition in obj.cups) competition.toJson(),
+      ])
+      ..writeByte(13)
+      ..write([
+        for (final competition in obj.continental) competition.toJson(),
       ]);
   }
 }

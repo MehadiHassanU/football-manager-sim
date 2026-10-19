@@ -2,10 +2,13 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
+import '../../core/data/continental_catalog.dart';
+import '../../core/models/continental.dart';
 import '../../core/models/cup.dart';
 import '../../core/models/fixture.dart';
 import '../../core/models/season.dart';
 import '../../core/models/team.dart';
+import '../../core/services/continental_service.dart';
 import '../../core/services/cup_service.dart';
 import '../../core/utils/season_calendar.dart';
 import '../../providers/career_session_provider.dart';
@@ -35,8 +38,8 @@ class CompetitionsScreen extends ConsumerWidget {
       );
     }
     final season = session.season;
-    final teams = ref.watch(playerDatabaseProvider).valueOrNull?.teams ??
-        <Team>[];
+    final teams =
+        ref.watch(playerDatabaseProvider).valueOrNull?.teams ?? <Team>[];
     final names = {for (final team in teams) team.id: team.name};
     final theme = Theme.of(context);
 
@@ -58,6 +61,20 @@ class CompetitionsScreen extends ConsumerWidget {
       body: ListView(
         padding: const EdgeInsets.fromLTRB(16, 8, 16, 24),
         children: [
+          if (season.continental.isNotEmpty)
+            for (final competition in season.continental) ...[
+              _ContinentalCard(
+                season: season,
+                comp: competition,
+                userId: session.team.id,
+                names: names,
+              ),
+              const SizedBox(height: 12),
+            ]
+          else if (ContinentalCatalog.qualifiesFrom(session.team.leagueId))
+            _ContinentalQualificationCard(
+              region: ContinentalCatalog.regionOf(session.team.leagueId)!,
+            ),
           if (season.cups.isEmpty)
             const _EmptyState(
               icon: Icons.emoji_events_outlined,
@@ -124,8 +141,7 @@ class _CompetitionCard extends StatelessWidget {
                       size: 20,
                       color: alive
                           ? AppTheme.pitchGreen
-                          : theme.colorScheme.onSurface
-                              .withValues(alpha: 0.55),
+                          : theme.colorScheme.onSurface.withValues(alpha: 0.55),
                     ),
                     const SizedBox(width: 8),
                     Expanded(
@@ -145,8 +161,7 @@ class _CompetitionCard extends StatelessWidget {
                   style: theme.textTheme.bodySmall?.copyWith(
                     color: winner == userId
                         ? AppTheme.pitchGreen
-                        : theme.colorScheme.onSurface
-                            .withValues(alpha: 0.68),
+                        : theme.colorScheme.onSurface.withValues(alpha: 0.68),
                     fontWeight: winner == userId ? FontWeight.w700 : null,
                   ),
                 ),
@@ -278,8 +293,7 @@ class _YourRoute extends StatelessWidget {
       final date = SeasonCalendar.formatDate(
         SeasonCalendar.dateOf(season, cup.anchors[k]),
       );
-      final tie =
-          round.where((f) => f.involves(userId)).firstOrNull;
+      final tie = round.where((f) => f.involves(userId)).firstOrNull;
       final bye = cup.byes[k] == userId;
       if (tie != null) {
         rows.add(_ResultRow(
@@ -799,5 +813,651 @@ class _EmptyState extends StatelessWidget {
         ),
       ),
     );
+  }
+}
+
+class _ContinentalQualificationCard extends StatelessWidget {
+  const _ContinentalQualificationCard({
+    required this.region,
+  });
+
+  final String region;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final competitions = ContinentalCatalog.competitionsOf(region);
+    if (competitions.isEmpty) return const SizedBox.shrink();
+    final top = competitions[0];
+    final second = competitions.length > 1 ? competitions[1] : null;
+    final third = competitions.length > 2 ? competitions[2] : null;
+    final route = third != null
+        ? 'The top four go to the ${top.name}, the next two to the '
+            '${second!.name} and seventh to the ${third.name}.'
+        : second != null
+            ? 'The top four go to the ${top.name} and the next places to the '
+                '${second.name}.'
+            : 'The top four qualify for the ${top.name}.';
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                const Icon(Icons.public, size: 20),
+                const SizedBox(width: 8),
+                Text(
+                  'CONTINENTAL FOOTBALL',
+                  style: theme.textTheme.labelSmall?.copyWith(
+                    letterSpacing: 1.1,
+                    fontSize: 11,
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 10),
+            Text(
+              'Not qualified this season',
+              style: theme.textTheme.titleSmall
+                  ?.copyWith(fontWeight: FontWeight.w700),
+            ),
+            const SizedBox(height: 4),
+            Text(
+              '$route The club is watching ${ContinentalCatalog.regionName(region)}'
+              ' from home this year.',
+              style: theme.textTheme.bodySmall,
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _ContinentalCard extends StatelessWidget {
+  const _ContinentalCard({
+    required this.season,
+    required this.comp,
+    required this.userId,
+    required this.names,
+  });
+
+  final SeasonState season;
+  final ContinentalState comp;
+  final String userId;
+  final Map<String, String> names;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final winner = ContinentalService.winnerOf(season, comp);
+    final exit = ContinentalService.clubExitLabel(season, comp, userId);
+    final table = ContinentalService.tableOf(season, comp);
+    final standing = table.where((row) => row.teamId == userId).firstOrNull;
+    final leagueDone = comp.leagueAnchors.isNotEmpty &&
+        comp.leagueAnchors.every((anchor) {
+          final round = season.rounds[anchor];
+          return round.isNotEmpty && round.every((f) => f.played);
+        });
+    final next = _nextLine();
+
+    return Card(
+      clipBehavior: Clip.antiAlias,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 14, 16, 12),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    const Icon(Icons.public, size: 20),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        comp.name,
+                        style: theme.textTheme.titleMedium
+                            ?.copyWith(fontWeight: FontWeight.w700),
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
+                    _ContinentChip(
+                      label: ContinentalCatalog.regionName(comp.region),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  _status(winner, exit, standing, leagueDone),
+                  style: theme.textTheme.bodyMedium,
+                ),
+                if (next != null) ...[
+                  const SizedBox(height: 3),
+                  Text(next, style: theme.textTheme.bodySmall),
+                ],
+              ],
+            ),
+          ),
+          const Divider(height: 1),
+          _ContinentalRoute(
+            season: season,
+            comp: comp,
+            userId: userId,
+            names: names,
+          ),
+          const Divider(height: 1),
+          _ContinentalStandings(
+            season: season,
+            comp: comp,
+            userId: userId,
+            names: names,
+          ),
+          _ContinentalKnockout(
+            season: season,
+            comp: comp,
+            userId: userId,
+            names: names,
+          ),
+        ],
+      ),
+    );
+  }
+
+  String _status(
+    String? winner,
+    String? exit,
+    LeagueStanding? standing,
+    bool leagueDone,
+  ) {
+    if (winner == userId) {
+      return 'Champions of ${ContinentalCatalog.regionName(comp.region)} '
+          '— the trophy is in the cabinet.';
+    }
+    if (winner != null) {
+      return 'Winners: ${names[winner] ?? winner}.';
+    }
+    if (exit != null) return '$exit.';
+    if (!leagueDone && standing != null) {
+      final games = standing.record.played;
+      return 'League phase — ${standing.position} of ${comp.clubIds.length} '
+          'after $games ${games == 1 ? 'game' : 'games'} · '
+          '${standing.record.points} pts.';
+    }
+    return 'Still in the competition.';
+  }
+
+  String? _nextLine() {
+    String dateOf(int anchor) =>
+        SeasonCalendar.formatDate(SeasonCalendar.dateOf(season, anchor));
+    String labelOf(int anchor) =>
+        ContinentalService.labelAt(season, anchor)?.$2 ?? 'Knockout round';
+
+    for (final anchor in comp.leagueAnchors) {
+      final fixture = season.userFixtureForRound(anchor, userId);
+      if (fixture != null && !fixture.played) {
+        return 'Next: ${labelOf(anchor)} · ${dateOf(anchor)}';
+      }
+    }
+    for (final anchor in comp.knockoutAnchors) {
+      final round = season.rounds[anchor];
+      final fixture = round.where((f) => f.involves(userId)).firstOrNull;
+      if (fixture != null && !fixture.played) {
+        return 'Next: ${labelOf(anchor)} · ${dateOf(anchor)}';
+      }
+      if (round.isEmpty && ContinentalService.isAlive(season, comp, userId)) {
+        return 'Next: ${labelOf(anchor)} · ${dateOf(anchor)} '
+            '(if the club gets there)';
+      }
+    }
+    return null;
+  }
+}
+
+class _ContinentChip extends StatelessWidget {
+  const _ContinentChip({required this.label});
+
+  final String label;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+      decoration: BoxDecoration(
+        color: theme.colorScheme.surfaceContainerHighest,
+        borderRadius: BorderRadius.circular(20),
+      ),
+      child: Text(
+        label,
+        style: theme.textTheme.labelSmall?.copyWith(fontSize: 10),
+      ),
+    );
+  }
+}
+
+class _ContinentalRoute extends StatelessWidget {
+  const _ContinentalRoute({
+    required this.season,
+    required this.comp,
+    required this.userId,
+    required this.names,
+  });
+
+  final SeasonState season;
+  final ContinentalState comp;
+  final String userId;
+  final Map<String, String> names;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final rows = <Widget>[];
+    for (var k = 0; k < comp.leagueAnchors.length; k++) {
+      final anchor = comp.leagueAnchors[k];
+      final fixture = season.userFixtureForRound(anchor, userId);
+      if (fixture == null) continue;
+      rows.add(_ContinentalLegRow(
+        label: 'League phase · Matchday ${k + 1}',
+        date: SeasonCalendar.formatDate(SeasonCalendar.dateOf(season, anchor)),
+        fixture: fixture,
+        userId: userId,
+        names: names,
+      ));
+    }
+    for (var k = 0; k < comp.knockoutAnchors.length; k++) {
+      final anchor = comp.knockoutAnchors[k];
+      final fixture =
+          season.rounds[anchor].where((f) => f.involves(userId)).firstOrNull;
+      if (fixture == null) continue;
+      final stage = k ~/ 2;
+      final leg = stage == 4 ? 1 : (k.isEven ? 1 : 2);
+      rows.add(_ContinentalLegRow(
+        label: ContinentalService.stageLabel(stage, leg),
+        date: SeasonCalendar.formatDate(SeasonCalendar.dateOf(season, anchor)),
+        fixture: fixture,
+        userId: userId,
+        names: names,
+      ));
+    }
+
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            'YOUR ROUTE',
+            style: theme.textTheme.labelSmall?.copyWith(
+              letterSpacing: 1.1,
+              fontSize: 11,
+            ),
+          ),
+          const SizedBox(height: 8),
+          if (rows.isEmpty)
+            Text(
+              'The league phase has not started yet.',
+              style: theme.textTheme.bodySmall,
+            )
+          else
+            for (var i = 0; i < rows.length; i++) ...[
+              if (i > 0) const SizedBox(height: 6),
+              rows[i],
+            ],
+        ],
+      ),
+    );
+  }
+}
+
+class _ContinentalLegRow extends StatelessWidget {
+  const _ContinentalLegRow({
+    required this.label,
+    required this.date,
+    required this.fixture,
+    required this.userId,
+    required this.names,
+  });
+
+  final String label;
+  final String date;
+  final Fixture fixture;
+  final String userId;
+  final Map<String, String> names;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final isHome = fixture.isHomeFor(userId);
+    final opponentId = isHome ? fixture.awayTeamId : fixture.homeTeamId;
+    final opponent = names[opponentId] ?? opponentId;
+    final goalsFor = isHome ? fixture.homeGoals : fixture.awayGoals;
+    final goalsAgainst = isHome ? fixture.awayGoals : fixture.homeGoals;
+    final result = goalsFor > goalsAgainst
+        ? 'W'
+        : goalsFor < goalsAgainst
+            ? 'L'
+            : 'D';
+    final score = fixture.played ? '$goalsFor–$goalsAgainst' : '—';
+
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        _ResultBadge(result: fixture.played ? result : '·'),
+        const SizedBox(width: 10),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                '$label — ${isHome ? 'vs' : 'at'} $opponent',
+                style: theme.textTheme.bodyMedium
+                    ?.copyWith(fontWeight: FontWeight.w600),
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+              ),
+              Text(
+                '$date${fixture.played ? ' · $score' : ''}',
+                style: theme.textTheme.bodySmall,
+              ),
+            ],
+          ),
+        ),
+        if (fixture.played)
+          Text(
+            result,
+            style: theme.textTheme.labelLarge?.copyWith(
+              fontWeight: FontWeight.w900,
+              color: result == 'W'
+                  ? AppTheme.pitchGreen
+                  : result == 'L'
+                      ? theme.colorScheme.error
+                      : null,
+            ),
+          ),
+      ],
+    );
+  }
+}
+
+class _ContinentalStandings extends StatelessWidget {
+  const _ContinentalStandings({
+    required this.season,
+    required this.comp,
+    required this.userId,
+    required this.names,
+  });
+
+  final SeasonState season;
+  final ContinentalState comp;
+  final String userId;
+  final Map<String, String> names;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final table = ContinentalService.tableOf(season, comp);
+    return ExpansionTile(
+      key: PageStorageKey('continental-table-${comp.id}'),
+      tilePadding: const EdgeInsets.symmetric(horizontal: 16),
+      childrenPadding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
+      title: Text(
+        'League phase table',
+        style:
+            theme.textTheme.bodyMedium?.copyWith(fontWeight: FontWeight.w600),
+      ),
+      subtitle: Text(
+        'Top 8 straight to the round of 16 · 9th to 24th to the play-off',
+        style: theme.textTheme.bodySmall,
+      ),
+      children: [
+        _ContinentalTableRow(
+          position: '#',
+          club: 'Club',
+          played: 'P',
+          goalDifference: 'GD',
+          points: 'Pts',
+          header: true,
+        ),
+        const SizedBox(height: 2),
+        for (final row in table)
+          _ContinentalTableRow(
+            position: '${row.position}',
+            club: names[row.teamId] ?? row.teamId,
+            played: '${row.record.played}',
+            goalDifference: '${row.record.goalDifference}',
+            points: '${row.record.points}',
+            ours: row.teamId == userId,
+          ),
+      ],
+    );
+  }
+}
+
+class _ContinentalTableRow extends StatelessWidget {
+  const _ContinentalTableRow({
+    required this.position,
+    required this.club,
+    required this.played,
+    required this.goalDifference,
+    required this.points,
+    this.ours = false,
+    this.header = false,
+  });
+
+  final String position;
+  final String club;
+  final String played;
+  final String goalDifference;
+  final String points;
+  final bool ours;
+  final bool header;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final style =
+        (header ? theme.textTheme.labelSmall : theme.textTheme.bodySmall)
+            ?.copyWith(
+      fontWeight: ours ? FontWeight.w800 : null,
+      color: ours ? AppTheme.pitchGreen : null,
+    );
+    Widget cell(String value, double width,
+            {TextAlign align = TextAlign.right}) =>
+        SizedBox(
+          width: width,
+          child: Text(value, style: style, textAlign: align),
+        );
+    return Container(
+      padding: const EdgeInsets.symmetric(vertical: 3),
+      color: ours ? AppTheme.pitchGreen.withValues(alpha: 0.06) : null,
+      child: Row(
+        children: [
+          cell(position, 26),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              club,
+              style: style,
+              overflow: TextOverflow.ellipsis,
+            ),
+          ),
+          cell(played, 26),
+          cell(goalDifference, 32),
+          cell(points, 34),
+        ],
+      ),
+    );
+  }
+}
+
+class _ContinentalKnockout extends StatelessWidget {
+  const _ContinentalKnockout({
+    required this.season,
+    required this.comp,
+    required this.userId,
+    required this.names,
+  });
+
+  final SeasonState season;
+  final ContinentalState comp;
+  final String userId;
+  final Map<String, String> names;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final tiles = <Widget>[];
+    for (var stage = 0; stage < 5; stage++) {
+      final anchor = comp.knockoutAnchors[stage == 4 ? 8 : stage * 2];
+      final firstLeg = season.rounds[anchor];
+      if (firstLeg.isEmpty) continue;
+      final date = SeasonCalendar.formatDate(
+        SeasonCalendar.dateOf(season, anchor),
+      );
+      final hasUser = firstLeg.any((f) => f.involves(userId));
+      tiles.add(ExpansionTile(
+        key: PageStorageKey('continental-knockout-${comp.id}-$stage'),
+        initiallyExpanded: hasUser,
+        tilePadding: const EdgeInsets.symmetric(horizontal: 16),
+        childrenPadding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
+        title: Text(
+          ContinentalService.stageName(stage),
+          style: theme.textTheme.bodyMedium?.copyWith(
+            fontWeight: hasUser ? FontWeight.w700 : FontWeight.w600,
+          ),
+        ),
+        subtitle: Text(
+          '$date · ${firstLeg.length} '
+          '${firstLeg.length == 1 ? 'tie' : 'ties'}',
+          style: theme.textTheme.bodySmall,
+        ),
+        children: [
+          for (final tie in firstLeg)
+            _ContinentalTieRow(
+              season: season,
+              comp: comp,
+              tie: tie,
+              userId: userId,
+              names: names,
+            ),
+        ],
+      ));
+    }
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Padding(
+          padding: const EdgeInsets.fromLTRB(16, 12, 16, 2),
+          child: Text(
+            'KNOCKOUTS',
+            style: theme.textTheme.labelSmall?.copyWith(
+              letterSpacing: 1.1,
+              fontSize: 11,
+            ),
+          ),
+        ),
+        if (tiles.isEmpty)
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 4, 16, 14),
+            child: Text(
+              'The bracket is drawn when the league phase ends.',
+              style: theme.textTheme.bodySmall,
+            ),
+          )
+        else
+          ...tiles,
+      ],
+    );
+  }
+}
+
+class _ContinentalTieRow extends StatelessWidget {
+  const _ContinentalTieRow({
+    required this.season,
+    required this.comp,
+    required this.tie,
+    required this.userId,
+    required this.names,
+  });
+
+  final SeasonState season;
+  final ContinentalState comp;
+  final Fixture tie;
+  final String userId;
+  final Map<String, String> names;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final ours = tie.involves(userId);
+    final aggregate = ContinentalService.aggregateOf(season, comp, tie);
+    final complete = _complete();
+    final winner =
+        complete ? ContinentalService.tieWinner(season, comp, tie) : null;
+    String side(String id) => names[id] ?? id;
+    final style = theme.textTheme.bodySmall?.copyWith(
+      fontWeight: ours ? FontWeight.w700 : FontWeight.w400,
+      color: winner == null || winner == tie.homeTeamId
+          ? theme.colorScheme.onSurface
+          : theme.colorScheme.onSurface.withValues(alpha: 0.55),
+    );
+    final score = !tie.played
+        ? 'v'
+        : '${aggregate.home}–${aggregate.away}'
+            '${complete && aggregate.penalties ? ' (pens)' : ''}';
+
+    return Container(
+      margin: const EdgeInsets.symmetric(vertical: 2),
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+      decoration: ours
+          ? BoxDecoration(
+              color: AppTheme.pitchGreen.withValues(alpha: 0.08),
+              borderRadius: BorderRadius.circular(8),
+            )
+          : null,
+      child: Row(
+        children: [
+          Expanded(
+            child: Text(
+              side(tie.homeTeamId),
+              textAlign: TextAlign.right,
+              overflow: TextOverflow.ellipsis,
+              style: style,
+            ),
+          ),
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 10),
+            child: Text(score, style: theme.textTheme.labelMedium),
+          ),
+          Expanded(
+            child: Text(
+              side(tie.awayTeamId),
+              overflow: TextOverflow.ellipsis,
+              style: style?.copyWith(
+                color: winner == null || winner == tie.awayTeamId
+                    ? style.color
+                    : theme.colorScheme.onSurface.withValues(alpha: 0.55),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  bool _complete() {
+    if (!tie.played) return false;
+    final index = comp.knockoutAnchors.indexOf(tie.round);
+    if (index < 0 || index >= 8) return true;
+    final stage = index ~/ 2;
+    final otherAnchor =
+        comp.knockoutAnchors[stage * 2 + (index.isEven ? 1 : 0)];
+    final other = season.rounds[otherAnchor];
+    return other.isNotEmpty && other.every((f) => f.played);
   }
 }

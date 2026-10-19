@@ -5,6 +5,7 @@ import 'package:go_router/go_router.dart';
 import '../../core/models/player.dart';
 import '../../core/models/sponsorship.dart';
 import '../../core/models/team.dart';
+import '../../core/services/continental_service.dart';
 import '../../core/services/cup_service.dart';
 import '../../providers/career_session_provider.dart';
 import '../../providers/data_providers.dart';
@@ -106,6 +107,11 @@ class _NoCareerBody extends StatelessWidget {
 /// 'Quarter-finals'), or null on league matchdays so the league shows.
 String? _cupTag(CareerSession session) {
   final season = session.season;
+  final continental =
+      ContinentalService.labelAt(season, season.currentMatchday);
+  if (continental != null) {
+    return '${continental.$1.name} · ${continental.$2}';
+  }
   final cup = season.cupAt(season.currentMatchday);
   if (cup == null) return null;
   final cupRound = cup.anchors.indexOf(season.currentMatchday);

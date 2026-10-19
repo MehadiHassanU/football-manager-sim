@@ -4,6 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../core/models/fixture.dart';
 import '../../core/models/season.dart';
 import '../../core/models/team.dart';
+import '../../core/services/continental_service.dart';
 import '../../core/services/cup_service.dart';
 import '../../core/utils/season_calendar.dart';
 import '../../providers/career_session_provider.dart';
@@ -73,8 +74,7 @@ class CalendarScreen extends ConsumerWidget {
         lastMonth = month;
         rows.add(Padding(
           padding: const EdgeInsets.fromLTRB(2, 14, 2, 6),
-          child: Text(month,
-              style: Theme.of(context).textTheme.titleSmall),
+          child: Text(month, style: Theme.of(context).textTheme.titleSmall),
         ));
       }
       rows.add(_CalendarRow(
@@ -102,9 +102,22 @@ String _opponentName(
 /// 'won on pens' / 'lost on pens' for a drawn cup tie already played; null
 /// for everything else. The verdict itself comes from [CupService], so the
 /// calendar can never disagree with the bracket.
+///
+/// Continental ties settle on aggregate, so only the single-leg final is a
+/// shootout there; the draw engine's verdict is what the row shows.
 String? _pensSuffix(SeasonState season, Fixture? fixture, String teamId) {
   if (fixture == null || !fixture.played || fixture.competition == 'league') {
     return null;
+  }
+  final continental =
+      season.continental.where((c) => c.id == fixture.competition).firstOrNull;
+  if (continental != null) {
+    final isFinal = continental.knockoutAnchors.isNotEmpty &&
+        fixture.round == continental.knockoutAnchors.last;
+    if (!isFinal || fixture.homeGoals != fixture.awayGoals) return null;
+    return ContinentalService.tieWinner(season, continental, fixture) == teamId
+        ? 'won on pens'
+        : 'lost on pens';
   }
   final note = CupService.shootoutNote(
     season: season,
@@ -210,9 +223,8 @@ class _CalendarRow extends StatelessWidget {
       CalendarEntryKind.cupSlot => 'Cup tie',
       _ => isHome ? 'vs $opponentName' : 'at $opponentName',
     };
-    final competition = entry.isCup
-        ? (entry.competitionLabel ?? 'Cup')
-        : 'League';
+    final competition =
+        entry.isCup ? (entry.competitionLabel ?? 'Cup') : 'League';
     final subtitleBase = switch (entry.kind) {
       CalendarEntryKind.bye => competition,
       CalendarEntryKind.cupSlot => '$competition · if through',
@@ -220,8 +232,7 @@ class _CalendarRow extends StatelessWidget {
     };
     // The shootout verdict rides the detail line rather than the score
     // column, where it could be squeezed out by a long club name.
-    final subtitle =
-        pens == null ? subtitleBase : '$subtitleBase · $pens';
+    final subtitle = pens == null ? subtitleBase : '$subtitleBase · $pens';
 
     String? resultText;
     Color? resultColor;
