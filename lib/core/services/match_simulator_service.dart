@@ -5,6 +5,7 @@ import '../models/player.dart';
 import '../models/tactics.dart';
 import '../constants/game_constants.dart';
 import '../constants/tactic_definitions.dart';
+import '../utils/scoring_weights.dart';
 
 /// Simulates football matches.
 ///
@@ -322,7 +323,13 @@ class MatchSimulation {
     final attackRating = homeAttacks ? _homePower + 1.5 : _awayPower;
     final defenceRating = homeAttacks ? _awayPower : _homePower;
     final team = homeAttacks ? 'home' : 'away';
-    final attacker = _randomPlayer(attackSquad);
+    // The man at the end of the move is a scorer, not a lottery winner: the
+    // same position weights that credit rival fixtures pick him. A defender
+    // still turns up for the odd set piece, but the striker is the name the
+    // feed — and the season's top-scorer list — should mostly carry.
+    final attacker =
+        ScoringWeights.pick(attackSquad, ScoringWeights.scoring, _rng) ??
+            _randomPlayer(attackSquad);
     final defender = _randomPlayer(defenceSquad);
 
     // Expected goals rise with the attacking side's edge. The normal tempo
@@ -333,12 +340,19 @@ class MatchSimulation {
     final roll = _rng.nextDouble();
 
     if (roll < goalChance) {
-      final assist =
-          _rng.nextDouble() < 0.7 ? _randomPlayer(attackSquad) : null;
-      final assistName = (assist != null && assist.name != attacker.name)
-          ? assist.name
+      // The creator is drawn from everyone except the scorer, weighted toward
+      // the players who actually make chances. The old draw could hand the
+      // assist to the scorer himself (and then silently drop it), which cost
+      // real assists and left the provider list flat.
+      final creators = [
+        for (final p in attackSquad)
+          if (p.id != attacker.id) p,
+      ];
+      final assist = _rng.nextDouble() < 0.7
+          ? ScoringWeights.pick(creators, ScoringWeights.assist, _rng)
           : null;
-      final assistId = assistName == null ? null : assist!.id;
+      final assistName = assist?.name;
+      final assistId = assist?.id;
       if (homeAttacks) {
         _homeGoals++;
       } else {
