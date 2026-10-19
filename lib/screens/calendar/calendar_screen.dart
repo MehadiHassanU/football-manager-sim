@@ -103,7 +103,7 @@ String _opponentName(
 /// for everything else. The verdict itself comes from [CupService], so the
 /// calendar can never disagree with the bracket.
 String? _pensSuffix(SeasonState season, Fixture? fixture, String teamId) {
-  if (fixture == null || !fixture.played || fixture.competition != 'cup') {
+  if (fixture == null || !fixture.played || fixture.competition == 'league') {
     return null;
   }
   final note = CupService.shootoutNote(
@@ -211,7 +211,7 @@ class _CalendarRow extends StatelessWidget {
       _ => isHome ? 'vs $opponentName' : 'at $opponentName',
     };
     final competition = entry.isCup
-        ? 'Cup${entry.cupRoundLabel == null ? '' : ' · ${entry.cupRoundLabel}'}'
+        ? (entry.competitionLabel ?? 'Cup')
         : 'League';
     final subtitleBase = switch (entry.kind) {
       CalendarEntryKind.bye => competition,

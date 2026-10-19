@@ -125,10 +125,12 @@ class SeasonState {
     List<List<Fixture>>? rounds,
     List<String>? legacyFixturePairs,
     Map<int, ScorerRecord>? scorers,
-    this.cup,
+    CupState? cup,
+    List<CupState>? cups,
   })  : _totalMatchdaysOverride = totalMatchdays,
         _legacyFixturePairs = legacyFixturePairs ?? const <String>[],
         rounds = rounds ?? const <List<Fixture>>[],
+        cups = cups ?? (cup == null ? const <CupState>[] : [cup]),
         records = records ?? <String, LeagueRecord>{},
         scorers = scorers ?? <int, ScorerRecord>{};
 
@@ -144,16 +146,29 @@ class SeasonState {
   /// of truth for who plays whom.
   ///
   /// Cup rounds live in the same list: a knockout round is spliced between
-  /// league matchdays at an absolute position recorded in [cup], and its
-  /// fixtures carry `competition: 'cup'`. Position-based reading keeps the
-  /// merged counter coherent.
+  /// league matchdays at an absolute position recorded in [cups], and its
+  /// fixtures carry the competition's id as their `competition` tag.
+  /// Position-based reading keeps the merged counter coherent.
   final List<List<Fixture>> rounds;
 
-  /// The knockout cup attached to this season, or null for seasons played
-  /// before cups existed (older saves get one when the next season starts).
-  /// The bracket itself is expressed through the schedule; this object holds
-  /// only the round anchors and byes.
-  final CupState? cup;
+  /// Every knockout competition attached to this season: the country's
+  /// primary cup, any second cup, and the super-cup curtain-raiser. The
+  /// bracket itself is expressed through the schedule; these objects hold the
+  /// round anchors, entrants, stage names and byes.
+  final List<CupState> cups;
+
+  /// The primary cup (the country's main knockout competition), or null for
+  /// seasons played before cups existed. Kept as a convenience for readers
+  /// that only care about one competition — new code should prefer [cups].
+  CupState? get cup => cups.isEmpty ? null : cups.first;
+
+  /// The cup whose round is at the absolute [round] position, if any.
+  CupState? cupAt(int round) {
+    for (final competition in cups) {
+      if (competition.anchors.contains(round)) return competition;
+    }
+    return null;
+  }
 
   /// Every club's record, keyed by team id.
   final Map<String, LeagueRecord> records;
@@ -200,8 +215,19 @@ class SeasonState {
   int get matchdayNumber => currentMatchday + 1;
 
   /// The round at which the league pauses for winter. Rounds keep counting
-  /// across the break, so this is the midpoint of the schedule.
-  int get winterBreakRound => totalMatchdays ~/ 2;
+  /// across the break, so this is the midpoint of the schedule — nudged off a
+  /// cup date when the midpoint lands on a knockout round.
+  int get winterBreakRound {
+    final mid = totalMatchdays ~/ 2;
+    if (rounds.isEmpty || cups.isEmpty) return mid;
+    final anchors = <int>{for (final c in cups) ...c.anchors};
+    if (!anchors.contains(mid)) return mid;
+    for (var d = 1; d < rounds.length; d++) {
+      if (mid + d < rounds.length && !anchors.contains(mid + d)) return mid + d;
+      if (mid - d >= 0 && !anchors.contains(mid - d)) return mid - d;
+    }
+    return mid;
+  }
 
   /// Whether the season is sitting at the winter break, which is a pause
   /// rather than a completed matchday: no fixture is played until the manager

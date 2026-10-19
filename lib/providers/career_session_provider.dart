@@ -5,6 +5,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:uuid/uuid.dart';
 
+import '../core/models/cup.dart';
 import '../core/models/fixture.dart';
 import '../core/models/manager.dart';
 import '../core/models/match.dart';
@@ -196,17 +197,19 @@ void startNewCareer(
     rng: Random(),
   );
 
-  // A knockout cup rides the same calendar: its rounds get spliced between
-  // league matchdays deterministically, and the drawn fixtures land right
-  // away so matchday 1's opponent is already on screen.
-  final cup = CupService.attachCup(
+  // The country's real knockout competitions ride the same calendar: the FA
+  // Cup and EFL Cup (plus the Community Shield) in England, the DFB-Pokal and
+  // DFL-Supercup in Germany, and so on. The FA Cup pool is every division in
+  // the country, so a League Two club really can draw a Premier League side;
+  // the top flight joins the round of 64 after a preliminary round.
+  final cups = CupService.attachCompetitions(
     rounds: rounds,
-    teamIds: [for (final t in leagueRivals) t.id],
+    teams: db?.teams ?? [team],
     leagueId: team.leagueId,
     currentYear: DateTime.now().year,
   );
 
-  final season = SeasonState(
+  var season = SeasonState(
     leagueId: team.leagueId,
     currentMatchday: 0,
     currentYear: DateTime.now().year,
@@ -214,8 +217,9 @@ void startNewCareer(
     isWinterBreak: false,
     records: {for (final t in leagueRivals) t.id: LeagueRecord()},
     rounds: rounds,
-    cup: cup,
+    cups: cups,
   );
+  season = _autoOpenSuperCup(season, db?.teams ?? [team], team.id);
   final session = CareerSession(manager: manager, team: team, season: season);
   ref.read(careerSessionProvider.notifier).state = session;
   // Seed the board's risk gauge from the persisted setting, so the Home screen
@@ -583,7 +587,7 @@ BoardVerdict? applyMatchResult(WidgetRef ref, MatchResult result) {
     // below replaces the session's season, and without this every goal
     // credited so far would be quietly dropped on each matchday.
     scorers: season.scorers,
-    cup: season.cup,
+    cups: season.cups,
   );
 
   final updated = _rebuildSession(session, updatedSeason);
@@ -696,6 +700,7 @@ void _applyMatchInjuries(
     leagueId: season.leagueId,
     year: season.currentYear,
     matchday: season.currentMatchday,
+    season: season,
   );
   for (final player in injured) {
     _addMedicalNews(session, player);
@@ -709,6 +714,7 @@ void _addMedicalNews(CareerSession session, Player player) {
     player,
     year: season.currentYear,
     matchday: season.currentMatchday,
+    season: season,
   );
   session.transferDesk.addNews(TransferNewsItem(
     type: 'injury',
@@ -739,6 +745,7 @@ void _developTrainingWeek(
     session.team.squad,
     year: season.currentYear,
     matchday: season.currentMatchday,
+    season: season,
   );
   for (final player in session.team.squad) {
     DevelopmentService.developWeek(
@@ -753,6 +760,7 @@ void _developTrainingWeek(
       leagueId: season.leagueId,
       year: season.currentYear,
       matchday: season.currentMatchday,
+      season: season,
     )) {
       _addMedicalNews(session, player);
     }
@@ -1434,6 +1442,50 @@ void simulateRound(
   }
 }
 
+/// Plays an opening super cup the manager is not involved in, so the first
+/// screen of a season is a league fixture rather than a phantom bye week.
+///
+/// The curtain-raiser still exists — its winner is visible on the
+/// Competitions screen and its fixture is in the calendar — but a manager who
+/// did not qualify for it should not have to press "skip" before the season
+/// starts. Returns the season to use: the same object when the club is in the
+/// super cup or there is none, otherwise a copy that starts on the next round.
+SeasonState _autoOpenSuperCup(
+  SeasonState season,
+  List<Team> teams,
+  String userId,
+) {
+  final superCup = season.cups
+      .where((cup) => cup.kind == CupKind.superCup)
+      .firstOrNull;
+  if (superCup == null || superCup.anchors.isEmpty) return season;
+  final anchor = superCup.anchors.first;
+  if (anchor >= season.rounds.length) return season;
+  final round = season.rounds[anchor];
+  if (round.isEmpty || round.any((fixture) => fixture.involves(userId))) {
+    return season;
+  }
+  simulateRound(
+    season,
+    anchor,
+    strengths: {
+      for (final team in teams) team.id: _squadStrength(team),
+    },
+    teams: {for (final team in teams) team.id: team},
+  );
+  return SeasonState(
+    leagueId: season.leagueId,
+    currentMatchday: anchor + 1,
+    currentYear: season.currentYear,
+    isPreSeason: season.isPreSeason,
+    isWinterBreak: false,
+    records: season.records,
+    rounds: season.rounds,
+    scorers: season.scorers,
+    cups: season.cups,
+  );
+}
+
 /// Simulates the rest of the current round using real squad strengths.
 void _simulateRemainingFixtures(
   WidgetRef ref,
@@ -1625,7 +1677,7 @@ void advancePastBye(WidgetRef ref) {
     records: session.season.records,
     rounds: session.season.rounds,
     scorers: session.season.scorers,
-    cup: session.season.cup,
+    cups: session.season.cups,
   );
   final updated = _rebuildSession(session, season);
   updated.team.leaguePosition = season.positionOf(session.team.id);
@@ -1648,66 +1700,71 @@ void advancePastBye(WidgetRef ref) {
 /// becomes the board's note and, for a final win, a trophy that permanently
 /// lives on the session.
 ///
+/// Every competition is processed, not just the primary cup: an FA Cup run and
+/// an EFL Cup run settle independently, and the super cup gets its own line in
+/// the cabinet.
+///
 /// Idempotent: re-applying a matchday after a crash re-derives everything
 /// from played fixtures, and the trophy is set-guarded.
 void _settleCupAfterRound(CareerSession session) {
   final season = session.season;
-  final cup = season.cup;
-  if (cup == null) return;
+  if (season.cups.isEmpty) return;
   CupService.progressCup(season);
 
-  // The highest cup round that is drawn AND fully played decides what story
-  // the board hears right now.
-  var settled = -1;
-  List<Fixture>? settledRound;
-  for (var k = 0; k < cup.anchors.length; k++) {
-    final round = season.rounds[cup.anchors[k]];
-    if (round.isEmpty || round.any((f) => !f.played)) break;
-    settled = k;
-    settledRound = round;
-  }
-  if (settledRound == null) return;
-
   final user = session.team;
-  final tie = settledRound.where((f) => f.involves(user.id)).firstOrNull;
-  if (tie == null) return; // the club sat this stage out already
-
-  if (settled == cup.anchors.length - 1) {
-    // The final: a trophy or heartbreak, one way or the other.
-    final label = '${cup.name} ${season.currentYear}';
-    final winner = CupService.cupWinnerOf(season);
-    if (winner == null) return; // still undecided (impossible here, but safe)
-    if (winner == user.id) {
-      if (!session.trophies.contains(label)) {
-        session.trophies.add(label);
-      }
-      // A cup run settles the board down: silverware is currency.
-      session.manager.sackablePercent =
-          (session.manager.sackablePercent + _cupWinRelief).clamp(0.0, 100.0);
-      session.boardNote =
-          'Champions! The $label is in the cabinet. Even the board '
-          'said something nice for once.';
-    } else {
-      session.boardNote =
-          'Beaten in the $label final. Hillsborough knows what that feels '
-          'like, and so does the board.';
+  for (final cup in season.cups) {
+    // The highest cup round that is drawn AND fully played decides what story
+    // the board hears right now.
+    var settled = -1;
+    List<Fixture>? settledRound;
+    for (var k = 0; k < cup.anchors.length; k++) {
+      final round = season.rounds[cup.anchors[k]];
+      if (round.isEmpty || round.any((f) => !f.played)) break;
+      settled = k;
+      settledRound = round;
     }
+    if (settledRound == null) continue;
+
+    final tie = settledRound.where((f) => f.involves(user.id)).firstOrNull;
+    if (tie == null) continue; // the club sat this stage out already
+
+    final label = '${cup.name} ${season.currentYear}';
+    if (settled == cup.anchors.length - 1) {
+      // The final: a trophy or heartbreak, one way or the other.
+      final winner = CupService.winnerOf(season, cup);
+      if (winner == null) return; // still undecided (impossible here, safe)
+      if (winner == user.id) {
+        if (!session.trophies.contains(label)) {
+          session.trophies.add(label);
+        }
+        // A cup run settles the board down: silverware is currency.
+        session.manager.sackablePercent =
+            (session.manager.sackablePercent + _cupWinRelief).clamp(0.0, 100.0);
+        session.boardNote =
+            'Champions! The $label is in the cabinet. Even the board '
+            'said something nice for once.';
+      } else {
+        session.boardNote = 'Beaten in the $label final. Wembley knows what '
+            'that feels like, and so does the board.';
+      }
+      return;
+    }
+
+    // Mid-bracket eliminations read through the next round's draw: alive
+    // clubs find their name in it, gone clubs do not.
+    final next = settled + 1;
+    if (next >= cup.anchors.length) continue;
+    final nextFixtures = season.rounds[cup.anchors[next]];
+    if (nextFixtures.isEmpty) continue; // nothing drawn (guarded upstream)
+    if (nextFixtures.any((f) => f.involves(user.id))) continue;
+    if (cup.byes[next] == user.id) continue; // drew a bye, not a knockout
+
+    session.boardNote =
+        'Out of the ${cup.name} at the '
+        '${CupService.roundNameOf(season, settled, cup: cup)}. The board '
+        'wanted a cup run to go with the budget.';
     return;
   }
-
-  // Mid-bracket eliminations read through the next round's draw: alive
-  // clubs find their name in it, gone clubs do not.
-  final next = settled + 1;
-  if (next >= cup.anchors.length) return;
-  final nextFixtures = season.rounds[cup.anchors[next]];
-  if (nextFixtures.isEmpty) return; // nothing drawn (guarded upstream)
-  if (nextFixtures.any((f) => f.involves(user.id))) return;
-  if (cup.byes[next] == user.id) return; // drew a bye, not a knockout
-
-  session.boardNote =
-      'Out of the ${cup.name} at the '
-      '${CupService.roundNameOf(season, settled)}. The board wanted a cup '
-      'run to go with the budget.';
 }
 
 /// Sack-risk credited when the club lifts a cup.
@@ -1726,7 +1783,7 @@ void resumeFromWinterBreak(WidgetRef ref) {
     records: session.season.records,
     rounds: session.season.rounds,
     scorers: session.season.scorers,
-    cup: session.season.cup,
+    cups: session.season.cups,
   );
   final updated = _rebuildSession(session, season);
   ref.read(careerSessionProvider.notifier).state = updated;
@@ -2723,14 +2780,22 @@ SeasonOutcome? rollIntoNextSeason(WidgetRef ref) {
       : db.teams.where((t) => t.leagueId == team.leagueId).toList();
 
   final nextRounds = buildRounds([for (final t in rivals) t.id], rng: Random());
-  // Every new season gets a cup, which is also how older saves (schema v2
-  // was cupless) come into the fold — at their next rollover, so a restored
-  // mid-season save never has its matchday counter re-mapped underneath it.
-  final cup = CupService.attachCup(
+  // Every new season gets the country's real cup competitions, seeded by last
+  // season's winners: the super cup is champion vs cup holder, and older saves
+  // (schema v2 was cupless) come into the fold at their next rollover, so a
+  // restored mid-season save never has its matchday counter re-mapped.
+  final table = season.table();
+  final nationalCup =
+      season.cups.where((c) => c.kind == CupKind.national).firstOrNull;
+  final nextCups = CupService.attachCompetitions(
     rounds: nextRounds,
-    teamIds: [for (final t in rivals) t.id],
+    teams: db?.teams ?? [team],
     leagueId: team.leagueId,
     currentYear: season.currentYear + 1,
+    championId: table.isEmpty ? null : table.first.teamId,
+    cupWinnerId: nationalCup == null
+        ? null
+        : CupService.winnerOf(season, nationalCup),
   );
 
   final nextSeason = SeasonState(
@@ -2741,7 +2806,7 @@ SeasonOutcome? rollIntoNextSeason(WidgetRef ref) {
     isWinterBreak: false,
     records: {for (final t in rivals) t.id: LeagueRecord()},
     rounds: nextRounds,
-    cup: cup,
+    cups: nextCups,
   );
 
   // Loans end with the season: borrowed players go home, loaned-out players
@@ -2804,7 +2869,10 @@ SeasonOutcome? rollIntoNextSeason(WidgetRef ref) {
   // one pass because only the manager's matches produce weekly records.
   _closeSeasonDevelopment(session, db);
 
-  final updated = _rebuildSession(session, nextSeason);
+  final updated = _rebuildSession(
+    session,
+    _autoOpenSuperCup(nextSeason, db?.teams ?? [team], team.id),
+  );
   // Deals keep running to the end of their terms. Slots that have run out go
   // back on the market as offers: a promoted club's shortlist is worth more
   // than a relegated one's because the brand valuations follow reputation.

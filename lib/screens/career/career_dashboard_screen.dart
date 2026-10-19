@@ -106,11 +106,11 @@ class _NoCareerBody extends StatelessWidget {
 /// 'Quarter-finals'), or null on league matchdays so the league shows.
 String? _cupTag(CareerSession session) {
   final season = session.season;
-  final cup = season.cup;
+  final cup = season.cupAt(season.currentMatchday);
   if (cup == null) return null;
-  final cupRound = CupService.cupRoundIndexOf(season, season.currentMatchday);
-  if (cupRound < 0) return null;
-  return '${cup.name} · ${CupService.roundNameOf(season, cupRound)}';
+  final cupRound = cup.anchors.indexOf(season.currentMatchday);
+  return '${cup.name} · '
+      '${CupService.roundNameOf(season, cupRound, cup: cup)}';
 }
 
 /// Hero: the next fixture, the form pills and the Play button in one card.
@@ -138,6 +138,7 @@ class _NextMatchHero extends ConsumerWidget {
     // can play at all, and whether the round is a bye.
     final fixture = season.currentFixtureFor(session.team.id);
     final hasFixture = fixture != null;
+    final cupTag = _cupTag(session);
     final isBye =
         !hasFixture && !season.isPostSeason && season.rounds.isNotEmpty;
     final isComplete = season.isPostSeason;
@@ -162,8 +163,7 @@ class _NextMatchHero extends ConsumerWidget {
                     child: Text(
                       // On a cup week the card's competition line names the
                       // knockout tie rather than the league.
-                      _cupTag(session) ??
-                          prettifyLeagueId(session.team.leagueId),
+                      cupTag ?? prettifyLeagueId(session.team.leagueId),
                       style: theme.textTheme.labelSmall,
                       overflow: TextOverflow.ellipsis,
                     ),
@@ -262,8 +262,11 @@ class _NextMatchHero extends ConsumerWidget {
               if (isBye) ...[
                 const SizedBox(height: 8),
                 Text(
-                  'No fixture this matchday - the league has an odd number of '
-                  'clubs. Everyone else still plays.',
+                  cupTag == null
+                      ? 'No fixture this matchday - the league has an odd number '
+                          'of clubs. Everyone else still plays.'
+                      : 'No fixture in the $cupTag. Skip the matchday to '
+                          'continue.',
                   style: theme.textTheme.bodySmall,
                   textAlign: TextAlign.center,
                 ),
@@ -936,6 +939,12 @@ class _QuickActions extends StatelessWidget {
               ),
             ),
           ],
+        ),
+        const SizedBox(height: 8),
+        OutlinedButton.icon(
+          onPressed: () => context.push('/competitions'),
+          icon: const Icon(Icons.emoji_events_outlined, size: 18),
+          label: const Text('Competitions & trophies'),
         ),
       ],
     );

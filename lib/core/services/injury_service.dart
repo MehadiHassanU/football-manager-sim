@@ -1,6 +1,7 @@
 import 'dart:math';
 
 import '../models/player.dart';
+import '../models/season.dart';
 import '../utils/season_calendar.dart';
 
 /// A rolled injury: what it is and how long it keeps the player out.
@@ -33,22 +34,29 @@ class Injury {
 /// nothing to attach to. The manager's own squad carries them naturally,
 /// because an injury lives on the player and survives save and restore.
 class InjuryService {
-  /// Matchday 0 of a season sits at the start of August.
+  /// Matchday 0 of a season sits on the opening Saturday in August.
   ///
   /// The convention lives on [SeasonCalendar] so the schedule screen and the
   /// treatment room read one clock; this stays as the physio's door into it.
-  static DateTime dateOfMatchday(int year, int matchday) =>
-      SeasonCalendar.dateOfRound(year, matchday);
+  /// Pass [season] to use the packed calendar (cup rounds on midweek dates);
+  /// without it the legacy one-week-per-round clock is used.
+  static DateTime dateOfMatchday(int year, int matchday,
+          {SeasonState? season}) =>
+      season == null
+          ? SeasonCalendar.dateOfRound(year, matchday)
+          : SeasonCalendar.dateOf(season, matchday);
 
   /// Whole weeks until [player] is fit again, 0 when he already is.
   static int weeksOut(
     Player player, {
     required int year,
     required int matchday,
+    SeasonState? season,
   }) {
     final date = player.injuryReturnDate;
     if (!player.isInjured || date == null) return 0;
-    final days = date.difference(dateOfMatchday(year, matchday)).inDays;
+    final days =
+        date.difference(dateOfMatchday(year, matchday, season: season)).inDays;
     return days <= 0 ? 0 : (days / 7).ceil();
   }
 
@@ -68,6 +76,7 @@ class InjuryService {
     required String leagueId,
     required int year,
     required int matchday,
+    SeasonState? season,
   }) {
     final byId = {for (final player in squad) player.id: player};
     final byName = {for (final player in squad) player.name: player};
@@ -88,7 +97,7 @@ class InjuryService {
         matchday: matchday,
       );
       if (injury == null) continue;
-      _applyInjury(player, injury, year: year, matchday: matchday);
+      _applyInjury(player, injury, year: year, matchday: matchday, season: season);
       injured.add(player);
     }
     return injured;
@@ -124,13 +133,14 @@ class InjuryService {
     required String leagueId,
     required int year,
     required int matchday,
+    SeasonState? season,
   }) {
     if (player.isInjured) return false;
     final random =
         Random('$leagueId:$year:$matchday:knock:${player.id}'.hashCode.abs());
     if (random.nextDouble() >= _trainingKnockChance) return false;
     _applyInjury(player, Injury(_pick(random, _knocks), 1),
-        year: year, matchday: matchday);
+        year: year, matchday: matchday, season: season);
     return true;
   }
 
@@ -141,8 +151,9 @@ class InjuryService {
     Iterable<Player> squad, {
     required int year,
     required int matchday,
+    SeasonState? season,
   }) {
-    final now = dateOfMatchday(year, matchday);
+    final now = dateOfMatchday(year, matchday, season: season);
     final healed = <Player>[];
     for (final player in squad) {
       if (!player.isInjured) continue;
@@ -198,11 +209,12 @@ class InjuryService {
     Injury injury, {
     required int year,
     required int matchday,
+    SeasonState? season,
   }) {
     player.isInjured = true;
     player.injuryType = injury.type;
     player.injuryReturnDate =
-        dateOfMatchday(year, matchday + injury.weeks);
+        dateOfMatchday(year, matchday + injury.weeks, season: season);
     // The treatment room is a lonely place.
     player.morale = (player.morale - 8).clamp(0, 100);
   }

@@ -50,6 +50,20 @@ class SeasonStateAdapter implements TypeAdapter<SeasonState> {
       cup = CupState.fromJson(Map<String, dynamic>.from(cupRaw));
     }
 
+    // Multiple competitions (Wave 4) live in field 12. A save written before
+    // them falls back to the single cup in field 10.
+    final cups = <CupState>[];
+    final rawCups = fields[12];
+    if (rawCups is List) {
+      for (final raw in rawCups) {
+        if (raw is Map) {
+          cups.add(CupState.fromJson(Map<String, dynamic>.from(raw)));
+        }
+      }
+    } else if (cup != null) {
+      cups.add(cup);
+    }
+
     // Added with the top scorers wave: absent on older saves, which read back
     // with an empty list.
     final scorers = <int, ScorerRecord>{};
@@ -75,7 +89,7 @@ class SeasonStateAdapter implements TypeAdapter<SeasonState> {
       rounds: rounds,
       legacyFixturePairs: legacyPairs,
       scorers: scorers,
-      cup: cup,
+      cups: cups,
     );
   }
 
@@ -92,7 +106,7 @@ class SeasonStateAdapter implements TypeAdapter<SeasonState> {
   @override
   void write(BinaryWriter writer, SeasonState obj) {
     writer
-      ..writeByte(12)
+      ..writeByte(13)
       ..writeByte(0)
       ..write(obj.leagueId)
       ..writeByte(1)
@@ -124,6 +138,10 @@ class SeasonStateAdapter implements TypeAdapter<SeasonState> {
       ..write({
         for (final entry in obj.scorers.entries)
           '${entry.key}': entry.value.toJson(),
-      });
+      })
+      ..writeByte(12)
+      ..write([
+        for (final competition in obj.cups) competition.toJson(),
+      ]);
   }
 }

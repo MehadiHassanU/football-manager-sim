@@ -112,7 +112,7 @@ void main() {
     expect(find.text('Sat 1 Aug'), findsOneWidget);
     expect(find.text('NEXT UP'), findsOneWidget);
     // The first cup tie reads as midweek.
-    expect(find.text('Tue 11 Aug'), findsOneWidget);
+    expect(find.text('Wed 12 Aug'), findsOneWidget);
     expect(find.textContaining('Semi-finals'), findsOneWidget);
     expect(find.text('August 2026'), findsOneWidget);
   });

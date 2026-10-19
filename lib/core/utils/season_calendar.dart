@@ -1,3 +1,4 @@
+import '../models/cup.dart';
 import '../models/fixture.dart';
 import '../models/season.dart';
 import '../services/cup_service.dart';
@@ -26,6 +27,7 @@ class CalendarEntry {
     required this.date,
     required this.kind,
     this.fixture,
+    this.cupName,
     this.cupRoundLabel,
     this.isCurrent = false,
   });
@@ -41,35 +43,83 @@ class CalendarEntry {
   /// The club's tie — null on bye and winter-break rows.
   final Fixture? fixture;
 
+  /// 'FA Cup', 'EFL Cup'… for cup rounds; null on league rows.
+  final String? cupName;
+
   /// 'Quarter-finals', 'Final'… for cup rounds; null on league rows.
   final String? cupRoundLabel;
 
   /// The round the season is sitting on right now.
   final bool isCurrent;
 
-  /// Whether this row belongs to the cup.
-  bool get isCup => cupRoundLabel != null || fixture?.competition == 'cup';
+  /// Whether this row belongs to a knockout competition.
+  bool get isCup => cupName != null || (fixture?.competition ?? 'league') != 'league';
+
+  /// 'FA Cup · Quarter-finals', or null on a league row.
+  String? get competitionLabel {
+    if (cupName == null) return null;
+    return cupRoundLabel == null ? cupName : '$cupName · $cupRoundLabel';
+  }
 }
 
 /// The season read as a calendar of real dates.
 ///
-/// The game's clock is the matchday counter: matchday 0 sits at the start of
-/// August and every round ticks it a week forward. That same clock already
-/// underlies injuries (an expected return is a date), so the schedule screen
-/// reads it rather than storing dates of its own — no save changes, and an
-/// old save lands on the same calendar.
+/// League rounds are Saturday afternoons; cup rounds are the midweek date in
+/// the same week as the league round they sit beside. The two therefore share
+/// a week instead of each consuming one, which is what lets a 38-match league
+/// season carry two domestic cups (and, later, continental nights) without
+/// running past the following summer.
+///
+/// The mapping is derived from the round list and the cup anchors, so it adds
+/// no stored dates and every save — old or new — renders the same calendar.
 class SeasonCalendar {
   SeasonCalendar._();
 
-  /// The date round [round] is played on: 1 August of the season year, one
-  /// week per round. This is the same convention [InjuryService] dates
-  /// injuries by, and it is deliberately derived rather than stored.
-  static DateTime dateOfRound(int year, int round) =>
-      DateTime(year, 8, 1).add(Duration(days: 7 * round));
+  /// The first Saturday of August: the opening weekend of the season. The
+  /// calendar is anchored to a Saturday rather than to 1 August so matchdays
+  /// stay on Saturdays whatever weekday the month starts on.
+  static DateTime startOfSeason(int year) {
+    var date = DateTime(year, 8, 1);
+    while (date.weekday != DateTime.saturday) {
+      date = date.add(const Duration(days: 1));
+    }
+    return date;
+  }
 
-  /// Cup ties read as midweek fixtures: shown four days before the Saturday
-  /// their matchday slot keeps. Presentation only — nothing else in the game
-  /// reads a shifted date.
+  /// The date round [round] is played on. Kept for callers that only have a
+  /// year and a round number (and for older saves); [season] models the
+  /// packed calendar with cups on midweek dates.
+  static DateTime dateOfRound(int year, int round) =>
+      startOfSeason(year).add(Duration(days: 7 * round));
+
+  /// The real date of [round] in [season]: Saturdays for league matchdays,
+  /// Wednesdays for cup rounds.
+  static DateTime dateOf(SeasonState season, int round) {
+    final anchors = <int>{for (final cup in season.cups) ...cup.anchors};
+    var leagueBefore = 0;
+    final limit = round < season.rounds.length ? round : season.rounds.length;
+    for (var i = 0; i < limit; i++) {
+      if (!anchors.contains(i)) leagueBefore++;
+    }
+    final start = startOfSeason(season.currentYear);
+    if (round > season.rounds.length) {
+      // An injury return can land past the last fixture: keep ticking a week
+      // per round rather than folding the extra weeks onto the final date.
+      return start.add(
+        Duration(days: 7 * leagueBefore + 7 * (round - season.rounds.length)),
+      );
+    }
+    if (anchors.contains(round)) {
+      // Midweek: the Wednesday before the next league weekend. A curtain-
+      // raiser before the opening weekend sits in the previous July.
+      final days = leagueBefore == 0 ? -3 : 7 * leagueBefore - 3;
+      return start.add(Duration(days: days));
+    }
+    return start.add(Duration(days: 7 * leagueBefore));
+  }
+
+  /// Cup ties used to be shown four days before their slot; kept for any
+  /// caller that still offsets a derived date (the winter-break marker does).
   static const Duration cupMidweekShift = Duration(days: 4);
 
   /// The rows of the season in playing order, from [teamId]'s point of view.
@@ -83,24 +133,26 @@ class SeasonCalendar {
     if (season.rounds.isEmpty) return const [];
 
     final entries = <CalendarEntry>[];
-    final cup = season.cup;
-    final cupRoundOfAnchor = <int, int>{
-      if (cup != null)
-        for (var k = 0; k < cup.anchors.length; k++) cup.anchors[k]: k,
-    };
+    final cupOfRound = <int, (CupState, int)>{};
+    for (final cup in season.cups) {
+      for (var k = 0; k < cup.anchors.length; k++) {
+        cupOfRound[cup.anchors[k]] = (cup, k);
+      }
+    }
 
     for (var round = 0; round < season.rounds.length; round++) {
-      final derived = dateOfRound(season.currentYear, round);
-      final cupRound = cupRoundOfAnchor[round];
-      final date =
-          cupRound == null ? derived : derived.subtract(cupMidweekShift);
+      final date = dateOf(season, round);
+      final cupRound = cupOfRound[round];
+      final cup = cupRound?.$1;
+      final label =
+          cupRound == null ? null : CupService.roundNameOf(season, cupRound.$2, cup: cup);
 
-      if (round == season.winterBreakRound) {
+      if (round == season.winterBreakRound && cup == null) {
         // Midweek ahead of the paused round, so the list never runs backwards
         // in time, whichever row the round itself produces.
         entries.add(CalendarEntry(
           round: round,
-          date: derived.subtract(cupMidweekShift),
+          date: date.subtract(cupMidweekShift),
           kind: CalendarEntryKind.winterBreak,
         ));
       }
@@ -112,25 +164,25 @@ class SeasonCalendar {
           date: date,
           kind: CalendarEntryKind.fixture,
           fixture: fixture,
-          cupRoundLabel: cupRound == null
-              ? null
-              : CupService.roundNameOf(season, cupRound),
+          cupName: cup?.name,
+          cupRoundLabel: label,
           isCurrent: round == season.currentMatchday,
         ));
         continue;
       }
 
-      if (cupRound != null && cup?.byes[cupRound] == teamId) {
+      if (cup != null && cup.byes[cupRound!.$2] == teamId) {
         entries.add(CalendarEntry(
           round: round,
           date: date,
           kind: CalendarEntryKind.bye,
-          cupRoundLabel: CupService.roundNameOf(season, cupRound),
+          cupName: cup.name,
+          cupRoundLabel: label,
           isCurrent: round == season.currentMatchday,
         ));
-      } else if (cupRound != null &&
+      } else if (cup != null &&
           season.fixturesForRound(round).isEmpty &&
-          CupService.clubIsAlive(season, teamId)) {
+          CupService.clubIsAlive(season, teamId, cup: cup)) {
         // The bracket draws a round only when the one before it is done, so
         // a round ahead is a date the club might play on — which is exactly
         // what the manager opens the calendar for.
@@ -138,10 +190,11 @@ class SeasonCalendar {
           round: round,
           date: date,
           kind: CalendarEntryKind.cupSlot,
-          cupRoundLabel: CupService.roundNameOf(season, cupRound),
+          cupName: cup.name,
+          cupRoundLabel: label,
           isCurrent: round == season.currentMatchday,
         ));
-      } else if (cupRound == null && round == season.currentMatchday) {
+      } else if (cup == null && round == season.currentMatchday) {
         // A league bye is only news as the current state of the season: the
         // manager needs to know this week will not be played.
         entries.add(CalendarEntry(

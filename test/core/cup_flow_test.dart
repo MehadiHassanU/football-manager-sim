@@ -81,6 +81,43 @@ Future<void> _run(
   return (db, session);
 }
 
+/// A four-club "Premier League" season with the country's real competitions:
+/// the FA Cup and EFL Cup (both semi-final and final) plus the Community
+/// Shield. The club starts on the FA Cup semi-final.
+(PlayerDatabase, CareerSession) _countryScenario() {
+  final db = stubLeagueDatabase(4);
+  for (final team in db.teams) {
+    team.leagueId = 'premier_league';
+  }
+  final ids = [for (final t in db.teams) t.id];
+  final rounds = buildRounds(ids, rng: Random(5));
+  final cups = CupService.attachCompetitions(
+    rounds: rounds,
+    teams: db.teams,
+    leagueId: 'premier_league',
+    currentYear: 2026,
+  );
+  final faCup = cups.firstWhere((c) => c.id == 'fa_cup');
+  final season = SeasonState(
+    leagueId: 'premier_league',
+    currentMatchday: faCup.anchors.first,
+    currentYear: 2026,
+    isPreSeason: false,
+    isWinterBreak: false,
+    records: {for (final id in ids) id: LeagueRecord()},
+    rounds: rounds,
+    cups: cups,
+  );
+  final user = db.teams.first;
+  final session = CareerSession(
+    manager:
+        Manager(name: 'Boss', age: 40, nationality: 'England', teamId: user.id),
+    team: user,
+    season: season,
+  );
+  return (db, session);
+}
+
 /// The scoreline in FIXTURE orientation, so the recorded goals land on the
 /// right side of the tie.
 MatchResult _scoreFor(Fixture fixture, PlayerDatabase db,
@@ -304,6 +341,84 @@ void main() {
     expect(cup.anchors.length, 2);
     expect(finalSeason.season.currentMatchday,
         greaterThanOrEqualTo(cup.anchors[1] + 1));
+  });
+
+  testWidgets('a country cup run wins its own trophy among several cups',
+      (tester) async {
+    final (db, session) = _countryScenario();
+    final user = db.teams.first;
+    final container = await _containerFor(db, session);
+    final faCup = session.season.cups.firstWhere((c) => c.id == 'fa_cup');
+    final eflCup = session.season.cups.firstWhere((c) => c.id == 'efl_cup');
+
+    Future<void> playCurrent() async {
+      final current = container.read(careerSessionProvider)!;
+      final round = current.season.currentMatchday;
+      final fixture = current.season.userFixtureForRound(round, user.id);
+      if (fixture == null) {
+        await _run(tester, container, (ref) => advancePastBye(ref));
+        return;
+      }
+      final home = fixture.isHomeFor(user.id);
+      await _run(
+        tester,
+        container,
+        (ref) => applyMatchResult(
+          ref,
+          _scoreFor(fixture, db,
+              homeGoals: home ? 2 : 0, awayGoals: home ? 0 : 2),
+        ),
+      );
+    }
+
+    // The FA Cup semi-final: win it and the final is drawn with the club in
+    // it, while the EFL Cup stays on its own track.
+    await playCurrent();
+    var updated = container.read(careerSessionProvider)!;
+    expect(
+      updated.season.rounds[faCup.anchors[1]].any((f) => f.involves(user.id)),
+      isTrue,
+      reason: 'winning the semi should put the club in the final',
+    );
+    expect(CupService.isDecided(updated.season, eflCup), isFalse);
+
+    // Play through the league and the other cup until the FA Cup final.
+    while (container.read(careerSessionProvider)!.season.currentMatchday <
+        faCup.anchors[1]) {
+      await playCurrent();
+    }
+
+    final beforeFinal = container.read(careerSessionProvider)!;
+    final leaguePoints = beforeFinal.team.points;
+    await playCurrent();
+    updated = container.read(careerSessionProvider)!;
+
+    expect(updated.trophies, contains('FA Cup 2026'));
+    expect(updated.boardNote, contains('Champions'));
+    // The final itself is not a points event.
+    expect(updated.team.points, leaguePoints);
+    expect(CupService.cupWinnerOf(updated.season), user.id);
+  });
+
+  test('a multi-cup season round-trips with every bracket intact', () async {
+    final (_, session) = _countryScenario();
+    final save = SaveService();
+    await save.saveSeason(session.season);
+    final loaded = await save.loadSeason();
+
+    expect(loaded, isNotNull);
+    expect(loaded!.cups, hasLength(session.season.cups.length));
+    for (var i = 0; i < loaded.cups.length; i++) {
+      final before = session.season.cups[i];
+      final after = loaded.cups[i];
+      expect(after.id, before.id);
+      expect(after.name, before.name);
+      expect(after.kind, before.kind);
+      expect(after.anchors, before.anchors);
+      expect(after.entrants, before.entrants);
+      expect(after.roundNames, before.roundNames);
+      expect(after.ties, before.ties);
+    }
   });
 
   test('a cupped season round-trips through the save with its bracket intact',

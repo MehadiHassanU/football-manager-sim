@@ -1491,9 +1491,12 @@ String? _cupTieLabel(CareerSession session) {
   final season = session.season;
   final fixture =
       season.userFixtureForRound(season.currentMatchday, session.team.id);
-  if (fixture == null || fixture.competition != 'cup') return null;
-  final cupRound = CupService.cupRoundIndexOf(season, season.currentMatchday);
-  return 'Cup · ${CupService.roundNameOf(season, cupRound)}';
+  final cup = season.cupAt(season.currentMatchday);
+  if (fixture == null || cup == null || fixture.competition == 'league') {
+    return null;
+  }
+  final cupRound = cup.anchors.indexOf(season.currentMatchday);
+  return '${cup.name} · ${CupService.roundNameOf(season, cupRound, cup: cup)}';
 }
 
 /// The penalties verdict for the tie the manager just played, or null when

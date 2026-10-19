@@ -70,12 +70,12 @@ void main() {
     final cupRows = entries.where((e) => e.isCup).toList();
     expect(cupRows, hasLength(2));
     expect(cupRows[0].cupRoundLabel, 'Semi-finals');
-    expect(cupRows[0].date, DateTime(2026, 8, 11),
-        reason: 'cup ties read midweek, four days before the league rhythm');
+    expect(cupRows[0].date, DateTime(2026, 8, 12),
+        reason: 'cup ties read midweek, in the same week as the league');
     expect(cupRows[1].cupRoundLabel, 'Final');
     expect(cupRows[1].kind, CalendarEntryKind.cupSlot,
         reason: 'the bracket only draws a round when the one before is done');
-    expect(cupRows[1].date, DateTime(2026, 9, 1));
+    expect(cupRows[1].date, DateTime(2026, 8, 26));
   });
 
   test('an eliminated club sees no future cup date', () {
@@ -152,7 +152,7 @@ void main() {
     final bye = entries.singleWhere((e) => e.kind == CalendarEntryKind.bye);
     expect(bye.round, 2);
     expect(bye.cupRoundLabel, 'Final');
-    expect(bye.date, DateTime(2026, 8, 11));
+    expect(bye.date, DateTime(2026, 8, 12));
     expect(bye.isCup, isTrue);
   });
 
