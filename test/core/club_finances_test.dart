@@ -90,27 +90,37 @@ void main() {
   group('SponsorshipService', () {
     test('mints one deal per slot sized to the club level', () {
       final team = _calibrationTeam(84);
-      final deals = SponsorshipService(rng: Random(3))
-          .ensureDeals(existing: const [], team: team, year: 2026);
+      final fronts = <double>[];
+      final backs = <double>[];
+      final sleeves = <double>[];
+      for (var seed = 0; seed < 30; seed++) {
+        final deals = SponsorshipService(rng: Random(seed))
+            .ensureDeals(existing: const [], team: team, year: 2026);
 
-      expect(deals, hasLength(SponsorSlot.values.length));
-      expect({for (final deal in deals) deal.slot}, SponsorSlot.values.toSet());
-      expect({for (final deal in deals) deal.brand}.length, 3,
-          reason: 'one brand should not cover two slots of the same kit');
+        expect(deals, hasLength(SponsorSlot.values.length));
+        expect(
+            {for (final deal in deals) deal.slot}, SponsorSlot.values.toSet());
+        expect({for (final deal in deals) deal.brand}.length, 3,
+            reason: 'one brand should not cover two slots of the same kit');
+        for (final deal in deals) {
+          expect(deal.annualValue, greaterThan(0));
+          expect(deal.durationYears, inInclusiveRange(1, 5));
+          expect(deal.startYear, 2026);
+          expect(deal.isActiveIn(2026), isTrue);
+        }
 
-      final bySlot = {for (final deal in deals) deal.slot: deal};
-      final front = bySlot[SponsorSlot.front]!;
-      final back = bySlot[SponsorSlot.back]!;
-      final sleeve = bySlot[SponsorSlot.sleeve]!;
-      expect(back.annualValue, closeTo(front.annualValue * 0.4, 100000));
-      expect(sleeve.annualValue, closeTo(front.annualValue * 0.3, 100000));
-
-      for (final deal in deals) {
-        expect(deal.annualValue, greaterThan(0));
-        expect(deal.durationYears, inInclusiveRange(1, 5));
-        expect(deal.startYear, 2026);
-        expect(deal.isActiveIn(2026), isTrue);
+        final bySlot = {for (final deal in deals) deal.slot: deal};
+        fronts.add(bySlot[SponsorSlot.front]!.annualValue);
+        backs.add(bySlot[SponsorSlot.back]!.annualValue);
+        sleeves.add(bySlot[SponsorSlot.sleeve]!.annualValue);
       }
+
+      // Slot shares still price the kit: averaged over the market, the back
+      // patch is worth about 40% of the shirt and the sleeve about 30%.
+      double mean(List<double> values) =>
+          values.reduce((a, b) => a + b) / values.length;
+      expect(mean(backs), closeTo(mean(fronts) * 0.4, mean(fronts) * 0.1));
+      expect(mean(sleeves), closeTo(mean(fronts) * 0.3, mean(fronts) * 0.1));
     });
 
     test('is deterministic for a seeded market', () {
@@ -137,7 +147,6 @@ void main() {
         existing: [running, expiring],
         team: team,
         year: 2027,
-        revalue: true,
       );
 
       expect(renewed, hasLength(3));
@@ -151,26 +160,22 @@ void main() {
       expect(sleeve.startYear, 2027, reason: 'the empty slot is sold too');
     });
 
-    test('renewals drift around the tier value instead of repeating it', () {
+    test('the fallback deals are priced to the club, never twice alike', () {
       final team = _calibrationTeam(84);
-      final expectedFront =
-          FinancialService().frontOfShirtValue(team.reputation);
+      final tier = FinancialService().frontOfShirtValue(team.reputation);
       final fronts = <double>[];
       for (var seed = 0; seed < 12; seed++) {
-        final deals = SponsorshipService(rng: Random(seed)).ensureDeals(
-          existing: const [],
-          team: team,
-          year: 2030,
-          revalue: true,
-        );
+        final deals = SponsorshipService(rng: Random(seed))
+            .ensureDeals(existing: const [], team: team, year: 2030);
         fronts.add(
             deals.where((d) => d.slot == SponsorSlot.front).single.annualValue);
       }
-      // ±15% band, rounded to 100k: never far from the tier value, never the
-      // exact same number every summer.
+      // Every deal sits in the club's market band: a small brand can pay well
+      // below the tier value and a five-star one above it, but nothing is an
+      // order of magnitude off, and no two summers quote the same money.
       for (final value in fronts) {
-        expect(value, greaterThanOrEqualTo(expectedFront * 0.85 - 100000));
-        expect(value, lessThanOrEqualTo(expectedFront * 1.15 + 100000));
+        expect(value, greaterThanOrEqualTo(tier * 0.55));
+        expect(value, lessThanOrEqualTo(tier * 1.8));
       }
       expect({...fronts}.length, greaterThan(1));
     });

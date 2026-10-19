@@ -11,6 +11,7 @@ import 'match/match_screen.dart';
 import 'team_management/team_management_screen.dart';
 import 'settings/settings_screen.dart';
 import 'transfer_market/transfer_market_screen.dart';
+import 'sponsorship/sponsorship_screen.dart';
 import 'league_table/league_table_screen.dart';
 import 'privacy/privacy_policy_screen.dart';
 
@@ -76,6 +77,10 @@ final appRouter = GoRouter(
         GoRoute(
           path: '/league-table',
           builder: (context, state) => const LeagueTableScreen(),
+        ),
+        GoRoute(
+          path: '/sponsorships',
+          builder: (context, state) => const SponsorshipScreen(),
         ),
         GoRoute(
           path: '/calendar',

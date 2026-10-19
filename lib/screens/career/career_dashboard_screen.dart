@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
 import '../../core/models/player.dart';
+import '../../core/models/sponsorship.dart';
 import '../../core/models/team.dart';
 import '../../core/services/cup_service.dart';
 import '../../providers/career_session_provider.dart';
@@ -67,6 +68,8 @@ class CareerDashboardScreen extends ConsumerWidget {
             ),
             const SizedBox(height: 12),
             _StatGrid(session: session),
+            const SizedBox(height: 12),
+            _SponsorshipCard(session: session),
             const SizedBox(height: 12),
             _PressureCard(session: session),
             const SizedBox(height: 12),
@@ -565,6 +568,61 @@ class _FixturePreviewSheet extends StatelessWidget {
             ],
           ),
         ),
+      ),
+    );
+  }
+}
+
+/// The commercial one-liner on Home: what the shirt is worth and whether the
+/// manager still has a choice to make about it.
+///
+/// Deals used to be signed automatically and visible only inside the Finances
+/// sheet, which made them impossible to find. A card on the screen the manager
+/// actually opens — with the money on it — is the difference between a feature
+/// and a hidden one.
+class _SponsorshipCard extends StatelessWidget {
+  const _SponsorshipCard({required this.session});
+
+  final CareerSession session;
+
+  @override
+  Widget build(BuildContext context) {
+    final year = session.season.currentYear;
+    final active = [
+      for (final deal in session.sponsorships)
+        if (deal.isActiveIn(year)) deal,
+    ];
+    final total = active.fold<double>(0, (sum, d) => sum + d.annualValue);
+    final offers = session.sponsorshipOffers.length;
+    Sponsorship? front;
+    for (final deal in active) {
+      if (deal.slot == SponsorSlot.front) front = deal;
+    }
+
+    final String subtitle;
+    if (offers > 0) {
+      subtitle = '$offers offer${offers == 1 ? '' : 's'} on the table — the '
+          'board signs the best one when the season kicks off.';
+    } else if (active.isEmpty) {
+      subtitle = 'No shirt sponsor signed yet.';
+    } else {
+      subtitle = 'Front of shirt: ${(front ?? active.first).brand}'
+          '${active.length > 1 ? ' · ${active.length} slots sold' : ''}';
+    }
+
+    return Card(
+      margin: EdgeInsets.zero,
+      clipBehavior: Clip.antiAlias,
+      child: ListTile(
+        onTap: () => context.push('/sponsorships'),
+        leading: const Icon(Icons.handshake_outlined),
+        title: Text(
+          active.isEmpty
+              ? 'Sell the shirt'
+              : '${_formatMoney(total)} a year from sponsors',
+        ),
+        subtitle: Text(subtitle, maxLines: 2, overflow: TextOverflow.ellipsis),
+        trailing: const Icon(Icons.chevron_right),
       ),
     );
   }

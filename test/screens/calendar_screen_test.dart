@@ -185,6 +185,16 @@ void main() {
     final (session, db) = _calendarCareer();
     await pumpScreen(tester, session, db, child: const CareerDashboardScreen());
 
+    // Home is one scroll: the quick actions sit below the match hero, the
+    // season strip and the commercial card, so the test scrolls the way a
+    // manager does instead of assuming everything fits on a 640 px screen.
+    await tester.dragUntilVisible(
+      find.text('Schedule'),
+      find.byType(ListView).first,
+      const Offset(0, -200),
+    );
+    await tester.pumpAndSettle();
+
     expect(find.text('Schedule'), findsOneWidget);
     expect(find.text('Table'), findsOneWidget);
   });

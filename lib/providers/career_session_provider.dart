@@ -50,6 +50,7 @@ class CareerSession {
     List<String>? trophies,
     Map<int, int>? worldGrowth,
     List<Sponsorship>? sponsorships,
+    List<SponsorshipOffer>? sponsorshipOffers,
   })  : startXI = startXI ?? [],
         benchIds = benchIds ?? [],
         userResults = userResults ?? [],
@@ -57,7 +58,9 @@ class CareerSession {
         transferDesk = transferDesk ?? TransferDesk(),
         trophies = trophies ?? [],
         worldGrowth = worldGrowth ?? <int, int>{},
-        sponsorships = sponsorships ?? <Sponsorship>[];
+        sponsorships = sponsorships ?? <Sponsorship>[],
+        sponsorshipOffers =
+            sponsorshipOffers ?? <SponsorshipOffer>[];
 
   final Manager manager;
   final Team team;
@@ -103,10 +106,17 @@ class CareerSession {
   /// of the fresh ratings at restore.
   final Map<int, int> worldGrowth;
 
-  /// The club's kit deals, one per slot. Carried in the save blob and renewed
-  /// on the summer rollover; only the manager's club carries deals because
-  /// only its books are simulated week to week.
+  /// The club's kit deals, one per slot. Carried in the save blob and put back
+  /// on the market when a term ends; only the manager's club carries deals
+  /// because only its books are simulated week to week.
   List<Sponsorship> sponsorships;
+
+  /// The offers on the table for slots without a running deal.
+  ///
+  /// They exist only while the manager is choosing: signing one clears the
+  /// slot, and the season's first matchday signs the best of whatever is left
+  /// so no shirt ever goes unsold. Carried in the save blob with the deals.
+  List<SponsorshipOffer> sponsorshipOffers;
 
   /// `Map<String, int>` get standings -> see [season].
   Map<String, int> get standings => season.standings;
@@ -133,6 +143,12 @@ class CareerSession {
         transferDesk: transferDesk,
         trophies: trophies,
         worldGrowth: worldGrowth,
+        // Deals and offers live in the career blob, not in the emitted
+        // object's identity. Dropping them here used to empty the club's
+        // commercial book on the first in-place bump (a tactics change was
+        // enough), which is why the deals seemed to vanish from Finances.
+        sponsorships: sponsorships,
+        sponsorshipOffers: sponsorshipOffers,
       );
 }
 
@@ -213,12 +229,14 @@ void startNewCareer(
     season.currentYear,
   );
   session.transferDesk = TransferDesk();
-  // The kit is sold before a ball is kicked: three deals sized to the club's
-  // level, so the first home match already pays its first instalment.
-  session.sponsorships = SponsorshipService().ensureDeals(
-    existing: const [],
+  // The shirt goes on the market before a ball is kicked. Each slot gets a
+  // shortlist instead of a pre-signed deal, so the manager chooses who pays
+  // for the kit; the first matchday signs the best offer left, which means an
+  // untouched shortlist still leaves the club with income.
+  session.sponsorshipOffers = _freshSponsorshipOffers(
     team: team,
     year: season.currentYear,
+    deals: const [],
   );
   // Reset career-only state for the fresh save.
   ref.read(shortlistProvider.notifier).state = {};
@@ -265,6 +283,11 @@ Future<bool> saveCareerNow(WidgetRef ref) async {
       // The kit deals are the club's steady income: the finances sheet and
       // the matchday settlement both read them back, so they ride the blob.
       'sponsorships': [for (final deal in session.sponsorships) deal.toJson()],
+      // Offers are only alive between the summer window and the first
+      // matchday; persisting them means a reload does not skip the choice.
+      'sponsorshipOffers': [
+        for (final offer in session.sponsorshipOffers) offer.toJson(),
+      ],
       // The active tactic used to live only in memory, so every restart
       // silently reset the formation and instructions.
       'tactic': session.tactic.toJson(),
@@ -339,6 +362,16 @@ Future<bool> tryRestoreCareer(WidgetRef ref) async {
           if (raw is Map) {
             final deal = Sponsorship.fromJson(Map<String, dynamic>.from(raw));
             if (deal != null) session.sponsorships.add(deal);
+          }
+        }
+      }
+      final sponsorOffers = blob['sponsorshipOffers'];
+      if (sponsorOffers is List) {
+        for (final raw in sponsorOffers) {
+          if (raw is Map) {
+            final offer =
+                SponsorshipOffer.fromJson(Map<String, dynamic>.from(raw));
+            if (offer != null) session.sponsorshipOffers.add(offer);
           }
         }
       }
@@ -596,6 +629,7 @@ CareerSession _rebuildSession(CareerSession session, SeasonState season) {
     startXI: session.startXI,
     benchIds: session.benchIds,
     sponsorships: session.sponsorships,
+    sponsorshipOffers: session.sponsorshipOffers,
   );
   updated.userResults.addAll(session.userResults);
   updated.trophies.addAll(session.trophies);
@@ -1880,6 +1914,73 @@ String? wageCeilingRefusal(Team team, double addedWage) {
       'of room.';
 }
 
+/// Fills every slot without a running deal with a fresh shortlist.
+///
+/// Brands already on a deal or on another slot's list are excluded, so the
+/// club never wears the same name twice and two offers never look alike.
+List<SponsorshipOffer> _freshSponsorshipOffers({
+  required Team team,
+  required int year,
+  required List<Sponsorship> deals,
+  int? lastPosition,
+}) {
+  final service = SponsorshipService();
+  final used = <String>{
+    for (final deal in deals)
+      if (deal.isActiveIn(year)) deal.brand,
+  };
+  final offers = <SponsorshipOffer>[];
+  for (final slot in SponsorSlot.values) {
+    if (deals.any((d) => d.slot == slot && d.isActiveIn(year))) continue;
+    final slotOffers = service.generateOffers(
+      team: team,
+      slot: slot,
+      year: year,
+      excludeBrands: used,
+      lastPosition: lastPosition,
+    );
+    used.addAll([for (final offer in slotOffers) offer.brand]);
+    offers.addAll(slotOffers);
+  }
+  return offers;
+}
+
+/// Signs the best offer left on every open slot.
+///
+/// Called by the season's first matchday (and nowhere else): the manager had
+/// the whole summer to choose, and a club without a shirt sponsor is not a
+/// realistic outcome of simply pressing Play. The deals are announced in the
+/// news feed so the decision never happens invisibly.
+void _autoSignSponsorships(CareerSession session) {
+  final service = SponsorshipService();
+  final year = session.season.currentYear;
+  final signed = <String>[];
+  for (final slot in SponsorSlot.values) {
+    if (session.sponsorships.any((d) => d.slot == slot && d.isActiveIn(year))) {
+      session.sponsorshipOffers.removeWhere((o) => o.slot == slot);
+      continue;
+    }
+    final best =
+        service.bestOffer(service.offersForSlot(session.sponsorshipOffers, slot));
+    if (best == null) continue;
+    session.sponsorships.add(service.sign(best));
+    session.sponsorshipOffers.removeWhere((o) => o.slot == slot);
+    signed.add('${best.brand} on the ${best.slot.label.toLowerCase()}');
+  }
+  if (signed.isEmpty) return;
+  final total = session.sponsorships
+      .where((deal) => deal.isActiveIn(year))
+      .fold<double>(0, (sum, deal) => sum + deal.annualValue);
+  session.transferDesk.addNews(TransferNewsItem(
+    type: 'finance',
+    title: 'The window closes on the kit',
+    body: 'With the season under way the board signed the best offers left: '
+        '${signed.join(', ')}. The kit is now worth '
+        '${_compactEuros(total)} a year.',
+    matchday: session.season.currentMatchday,
+  ));
+}
+
 /// Settles one matchday's books for the manager's club.
 ///
 /// Income is gate receipts (home games only), broadcast money (every match,
@@ -1892,6 +1993,13 @@ void _settleMatchdayFinances(
   bool playedMatch = true,
   bool homeMatch = false,
 }) {
+  // The first matchday closes the sponsorship window. Any slot the manager
+  // left open is signed to the best offer on the table before the books for
+  // the week are drawn up, so the shirt is never unsold while the club plays.
+  if (session.season.currentMatchday >= 1 &&
+      session.sponsorshipOffers.isNotEmpty) {
+    _autoSignSponsorships(session);
+  }
   final team = session.team;
   final finance = FinancialService();
   final kits = SponsorshipService().weeklyIncome(
@@ -1955,11 +2063,99 @@ double projectedSeasonRevenue(CareerSession session) {
 void repairClubFinances(CareerSession session) {
   session.team.stadiumCapacity = FinancialService()
       .realisticCapacity(session.team.reputation, session.team.id);
-  session.sponsorships = SponsorshipService().ensureDeals(
-    existing: session.sponsorships,
+  final year = session.season.currentYear;
+
+  // Keep only what still runs, and only offers made for this season for slots
+  // that have not been sold since.
+  session.sponsorships = [
+    for (final deal in session.sponsorships)
+      if (deal.isActiveIn(year)) deal,
+  ];
+  session.sponsorshipOffers = [
+    for (final offer in session.sponsorshipOffers)
+      if (offer.year == year &&
+          !session.sponsorships.any((d) => d.slot == offer.slot))
+        offer,
+  ];
+
+  // Offers mean the manager is mid-decision. Signing the missing slots here
+  // would close that choice every time the save is loaded; the first matchday
+  // is the real deadline. Without any offers the save predates the market —
+  // or the window already closed — and the shirt must still be sold.
+  if (session.sponsorshipOffers.isEmpty) {
+    session.sponsorships = SponsorshipService().ensureDeals(
+      existing: session.sponsorships,
+      team: session.team,
+      year: year,
+    );
+  }
+}
+
+/// Signs [offer] for the manager's club.
+///
+/// Returns false when the slot has already been sold or the offer belongs to a
+/// season that has ended — both can happen after a fast double-tap, and the
+/// screen reports whichever happened instead of pretending it worked.
+bool signSponsorshipOffer(WidgetRef ref, SponsorshipOffer offer) {
+  final session = ref.read(careerSessionProvider);
+  if (session == null) return false;
+  final year = session.season.currentYear;
+  if (offer.year != year ||
+      session.sponsorships
+          .any((deal) => deal.slot == offer.slot && deal.isActiveIn(year))) {
+    return false;
+  }
+  final service = SponsorshipService();
+  session.sponsorships.add(service.sign(offer));
+  // One signature closes the slot: the other brands' offers lapse with it.
+  session.sponsorshipOffers.removeWhere((o) => o.slot == offer.slot);
+  final clause = offer.clause;
+  session.transferDesk.addNews(TransferNewsItem(
+    type: 'finance',
+    title: '${offer.brand} signs on the ${offer.slot.label.toLowerCase()}',
+    body: '${_compactEuros(offer.annualValue)} a year for '
+        '${offer.durationYears} season${offer.durationYears == 1 ? '' : 's'}. '
+        '${clause == null ? 'A flat deal, no performance clause.' : 'Includes a ${clause.label.toLowerCase()} bonus.'}',
+    matchday: session.season.currentMatchday,
+  ));
+  ref.read(careerSessionProvider.notifier).state = session.shallowCopy();
+  _persist(ref, session);
+  return true;
+}
+
+/// Puts a new shortlist on [slot] — the reward for watching a rewarded ad.
+///
+/// The caller is responsible for having shown the ad; this only swaps the
+/// market. Brands on running deals and on the other slots' lists are excluded,
+/// so a reroll feels like a fresh set of bidders, not a shuffled copy.
+void rerollSponsorshipOffers(WidgetRef ref, SponsorSlot slot) {
+  final session = ref.read(careerSessionProvider);
+  if (session == null) return;
+  final year = session.season.currentYear;
+  if (session.sponsorships
+      .any((deal) => deal.slot == slot && deal.isActiveIn(year))) {
+    return;
+  }
+  final used = <String>{
+    for (final deal in session.sponsorships)
+      if (deal.isActiveIn(year)) deal.brand,
+    for (final offer in session.sponsorshipOffers)
+      if (offer.slot != slot) offer.brand,
+  };
+  final offers = SponsorshipService().generateOffers(
     team: session.team,
-    year: session.season.currentYear,
+    slot: slot,
+    year: year,
+    excludeBrands: used,
+    lastPosition: session.season.currentMatchday == 0
+        ? null
+        : session.season.positionOf(session.team.id),
   );
+  session.sponsorshipOffers
+    ..removeWhere((o) => o.slot == slot)
+    ..addAll(offers);
+  ref.read(careerSessionProvider.notifier).state = session.shallowCopy();
+  _persist(ref, session);
 }
 
 /// The reason a signing cannot go through, or null when it can.
@@ -2483,6 +2679,23 @@ SeasonOutcome? rollIntoNextSeason(WidgetRef ref) {
     team.transferBudget += merit * kTransferBudgetRelease;
   }
 
+  // Sponsorship bonus clauses settle with the final table, before the season's
+  // numbers are wiped. A top-four clause, a cup win or a per-goal bonus is real
+  // money the board can spend in the summer.
+  final clauseSettlements = SponsorshipService().settleClauses(
+    deals: session.sponsorships,
+    year: season.currentYear,
+    leaguePosition: position,
+    leagueGoals: team.goalsFor,
+    cupWon: CupService.cupWinnerOf(season) == team.id,
+  );
+  final clauseBonus =
+      clauseSettlements.fold<double>(0, (sum, s) => sum + s.amount);
+  if (clauseBonus > 0) {
+    team.budget += clauseBonus.round();
+    team.transferBudget += clauseBonus * kTransferBudgetRelease;
+  }
+
   // Reset the season's own numbers; the club's identity and squad carry over.
   team.points = 0;
   team.wins = 0;
@@ -2592,14 +2805,18 @@ SeasonOutcome? rollIntoNextSeason(WidgetRef ref) {
   _closeSeasonDevelopment(session, db);
 
   final updated = _rebuildSession(session, nextSeason);
-  // Kit deals keep running to the end of their terms; the slots that have
-  // run out are renewed within ±15% of the club's tier value, so a promoted
-  // club gets bigger offers and a relegated one smaller.
-  updated.sponsorships = SponsorshipService().ensureDeals(
-    existing: session.sponsorships,
+  // Deals keep running to the end of their terms. Slots that have run out go
+  // back on the market as offers: a promoted club's shortlist is worth more
+  // than a relegated one's because the brand valuations follow reputation.
+  updated.sponsorships = [
+    for (final deal in session.sponsorships)
+      if (deal.isActiveIn(nextSeason.currentYear)) deal,
+  ];
+  updated.sponsorshipOffers = _freshSponsorshipOffers(
     team: team,
     year: nextSeason.currentYear,
-    revalue: true,
+    deals: updated.sponsorships,
+    lastPosition: position,
   );
   updated.userResults.clear();
   // No deal survives the final whistle of a season. Unfinished talks are
@@ -2616,14 +2833,32 @@ SeasonOutcome? rollIntoNextSeason(WidgetRef ref) {
   ));
   final kitTotal = updated.sponsorships
       .fold<double>(0, (sum, deal) => sum + deal.annualValue);
+  final openSlots = SponsorSlot.values
+      .where((slot) => !updated.sponsorships.any((d) => d.slot == slot))
+      .length;
   updated.transferDesk.addNews(TransferNewsItem(
     type: 'finance',
     title: 'The season is settled',
     body: 'Finishing ${_ordinal(position)} banked ${_compactEuros(merit)} in '
-        'merit money. The kit deals for the new season are worth '
-        '${_compactEuros(kitTotal)} a year.',
+        'merit money.'
+        '${clauseBonus > 0 ? ' Bonus clauses added ${_compactEuros(clauseBonus)}.' : ''} '
+        'The kit is worth ${_compactEuros(kitTotal)} a year'
+        '${openSlots > 0 ? '; $openSlots slot${openSlots == 1 ? '' : 's'} open for offers.' : '.'}',
     matchday: 0,
   ));
+  if (clauseSettlements.isNotEmpty) {
+    updated.transferDesk.addNews(TransferNewsItem(
+      type: 'finance',
+      title: 'Sponsors pay the bonuses',
+      body: [
+        for (final settlement in clauseSettlements)
+          '${settlement.deal.brand}: '
+              '${_compactEuros(settlement.amount)} for '
+              '${settlement.reason}.',
+      ].join(' '),
+      matchday: 0,
+    ));
+  }
   // The summer window is open from matchday 0: deals agreed after the winter
   // shut registers now.
   completePendingSignings(ref, updated);

@@ -1,8 +1,18 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- The rewarded-ad SDK needs the network. Debug and profile manifests
+         already carried this; the release manifest did not, which is why it is
+         declared here now that an ad ships. -->
+    <uses-permission android:name="android.permission.INTERNET"/>
     <application
         android:label="Touchline Legend"
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher">
+        <!-- Google's official test AdMob application ID. Replace together with
+             kRewardedTestUnitId in lib/providers/ad_provider.dart when the
+             store build gets its own AdMob account. -->
+        <meta-data
+            android:name="com.google.android.gms.ads.APPLICATION_ID"
+            android:value="ca-app-pub-3940256099942544~3347511713"/>
         <activity
             android:name=".MainActivity"
             android:exported="true"

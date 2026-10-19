@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:go_router/go_router.dart';
 
 import '../../core/constants/game_constants.dart';
 import '../../core/models/sponsorship.dart';
@@ -97,7 +98,7 @@ class _ClubFinancesSheet extends ConsumerWidget {
           value: broadcast,
         ),
         _MoneyRow(
-          label: 'Kit instalments',
+          label: 'Sponsor instalments',
           detail: 'Every week',
           value: kits,
         ),
@@ -120,13 +121,40 @@ class _ClubFinancesSheet extends ConsumerWidget {
           emphasise: true,
         ),
         const SizedBox(height: 20),
-        Text('Kit deals', style: theme.textTheme.titleMedium),
-        const SizedBox(height: 6),
+        Row(
+          children: [
+            Expanded(
+              child: Text('Sponsorships',
+                  style: theme.textTheme.titleMedium),
+            ),
+            TextButton(
+              onPressed: () {
+                // Grab the router before the sheet closes: pushing through
+                // this context afterwards would use a disposed element.
+                final router = GoRouter.of(context);
+                Navigator.of(context).pop();
+                router.push('/sponsorships');
+              },
+              child: const Text('Manage'),
+            ),
+          ],
+        ),
+        const SizedBox(height: 2),
         if (session.sponsorships.isEmpty)
-          Text('No deals signed.', style: theme.textTheme.bodySmall)
+          Text('No deals signed yet.', style: theme.textTheme.bodySmall)
         else
           for (final deal in session.sponsorships)
             _SponsorTile(deal: deal, year: season.currentYear),
+        if (session.sponsorshipOffers.isNotEmpty)
+          Padding(
+            padding: const EdgeInsets.only(top: 4),
+            child: Text(
+              '${session.sponsorshipOffers.length} offer'
+              '${session.sponsorshipOffers.length == 1 ? '' : 's'} waiting on '
+              'your desk.',
+              style: theme.textTheme.bodySmall,
+            ),
+          ),
         const SizedBox(height: 20),
         Text('Season outlook', style: theme.textTheme.titleMedium),
         const SizedBox(height: 6),

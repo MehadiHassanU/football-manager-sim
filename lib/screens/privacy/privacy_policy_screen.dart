@@ -25,7 +25,7 @@ class PrivacyPolicyScreen extends StatelessWidget {
       body: ListView(
         padding: const EdgeInsets.all(16),
         children: [
-          Text('Effective date: 30 September 2026',
+          Text('Effective date: 20 October 2026',
               style: theme.textTheme.bodySmall),
           const SizedBox(height: 16),
           _section(
@@ -40,9 +40,11 @@ class PrivacyPolicyScreen extends StatelessWidget {
           _section(
             context,
             'Data we collect',
-            'None. The app has no accounts, no sign-in, no analytics, and no '
-                'third-party trackers. Nothing you do in the game leaves '
-                'your device.',
+            'None of our own. The app has no accounts, no sign-in, no analytics '
+                'of ours, and no servers that receive your game data. The only '
+                'third-party component that can send data off your device is '
+                'the advertising SDK described below, and only when you choose '
+                'to watch a rewarded video.',
           ),
           _section(
             context,
@@ -55,18 +57,24 @@ class PrivacyPolicyScreen extends StatelessWidget {
             context,
             'Permissions',
             'The app requests no dangerous permissions. It does not access '
-                'your camera, microphone, contacts, location, or files.',
+                'your camera, microphone, contacts, location, or files. It uses '
+                'the internet only for the optional rewarded video described '
+                'below.',
           ),
           _section(
             context,
-            'Advertising (planned)',
-            'A future release of ${AppConfig.appName} may include '
-                'advertisements served by Google AdMob. When that happens, '
-                'the ad provider may collect device identifiers and usage '
-                'data to deliver and measure ads, as described in Google\'s '
-                'own privacy policy. This update will be announced in the '
-                'release notes and this policy will be updated before the '
-                'ad-enabled version ships.',
+            'Advertising',
+            '${AppConfig.appName} contains one optional ad: a rewarded video '
+                'served by Google AdMob, shown only when you tap "Watch an ad '
+                'for fresh offers" on the Sponsorships screen. Watching it '
+                'refreshes the sponsorship offers; closing it early, or never '
+                'opening that screen, has no effect on your career. There are '
+                'no banners, no pop-ups and no ads during matches. When a '
+                'video is requested, Google may collect device identifiers '
+                '(including the advertising ID), approximate location derived '
+                'from your IP address, and ad interaction data, as described '
+                'in Google\'s privacy policy. We receive only aggregate '
+                'revenue reports, never your personal data.',
           ),
           _section(
             context,
@@ -79,7 +87,8 @@ class PrivacyPolicyScreen extends StatelessWidget {
             'Your choices',
             'All game data is local, so you can delete everything at any '
                 'time by clearing the app\'s storage from your device '
-                'settings or by uninstalling the app.',
+                'settings or by uninstalling the app. You can also decline '
+                'every rewarded video; the game never requires one.',
           ),
           _section(
             context,

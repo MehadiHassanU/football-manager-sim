@@ -77,16 +77,20 @@ Initial release of Touchline Legend.
 • Full tactical system with 9 adjustable settings
 • National knockout cup with a trophy cabinet
 • Transfer market, loans, youth academy and training focuses
+• Sponsorship offers with real criteria and performance bonuses
 • Player growth, ageing and injuries with real recovery times
 • Season standings, form guides and legacy tracking
 • Offline play — your career is saved on your device
 ```
 
-## Release notes — v1.1 (ads variant, for later)
+## Release notes — current build
 
 ```
-• This version contains ads
-• Optional "Reduce ads" setting: disables interstitial ads
+• Sponsorships: choose your kit deals from live offers, each with its own criteria and performance bonus
+• New Sponsorships desk on Home — the money, every bid, and one tap to sign
+• Optional rewarded video refreshes a slot's offers. No banners, no pop-ups, no ads during matches
+• Transfer market moved to the bottom bar: one tap from anywhere
+• Goals and assists now follow the ratings: defenders no longer top the scoring charts
 • Minor fixes and improvements
 ```
 
@@ -102,7 +106,7 @@ Initial release of Touchline Legend.
 
 - **App category:** Games → Sports
 - **Tags:** Football, Management, Simulation, Sports Strategy
-- **Contains ads:** No (v1.0) — flip to Yes at v1.1 per `ads-plan.md`
+- **Contains ads:** Yes — one optional rewarded video (sponsorship reroll); no banners or interstitials
 - **In-app purchases:** No
 - **Price:** Free
 - **Content rating questionnaire:** Teen+ path (see `play-console-checklist.md`)

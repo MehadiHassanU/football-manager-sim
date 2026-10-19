@@ -17,13 +17,13 @@ account/decision, everything else is copy-paste from this folder.
 | Form | Answer |
 |---|---|
 | **Privacy policy** | Paste hosted URL from step 0 |
-| **Ads** | v1.0: **No, my app does not contain ads** → flip to Yes at v1.1 (see ads-plan.md) |
+| **Ads** | **Yes, my app contains ads** — one optional rewarded video for the sponsorship reroll (see ads-plan.md) |
 | **In-app purchases** | No |
 | **Content ratings** | Start questionnaire → Category: *Game* → answer below |
 | **Target audience** | Age groups: **13–15, 16–17, 18+** (NOT "children under 13") → no child-appeal design |
 | **News app** | No |
 | **COVID-19** | No |
-| **Data safety** | v1.0: **"No, this app does not collect or share user data."** (v1.1 worksheet in ads-plan.md) |
+| **Data safety** | **Yes** — complete the AdMob worksheet in ads-plan.md (device IDs, app interactions, approximate location; user-initiated) |
 | **Government apps** | No |
 | **Financial features** | None |
 
@@ -55,8 +55,10 @@ account/decision, everything else is copy-paste from this folder.
 
 - [ ] ☁️ Generate keystore + signing config (deferred milestone)
 - [ ] ☁️ Set final application ID (deferred milestone)
+- [ ] ☁️ Replace the AdMob **test** app ID and rewarded unit ID with production
+      ones (see ads-plan.md → Swapping the test IDs)
 - [ ] Build: `flutter build appbundle --release` (Play requires **AAB**, not APK)
-- [ ] Release notes: paste v1.0 block from `listing.md`
+- [ ] Release notes: paste the current block from `listing.md`
 - [ ] Countries: ☁️ choose availability
 - [ ] Devices: default (phone + tablet)
 
@@ -67,6 +69,8 @@ account/decision, everything else is copy-paste from this folder.
    - Label shows "Touchline Legend" on the launcher
    - New career → play match → standings update
    - Settings → Privacy Policy opens
+   - Sponsorships → "Watch an ad for fresh offers" shows the rewarded video and
+     refreshes that slot's offers (test unit) without leaving the screen
 3. Complete App content forms
 4. Submit for review (typical review: a few hours to ~7 days)
 
@@ -76,6 +80,6 @@ account/decision, everything else is copy-paste from this folder.
 |---|---|
 | Missing privacy policy URL | In-app screen + hosted copy ready |
 | Data safety mismatch | Worksheet answers match actual behavior (local-only) |
-| "Contains ads" mismatch | v1.0 has no SDK → declare No |
+| "Contains ads" mismatch | App has one rewarded placement → declare **Yes** and keep ads-plan.md in sync |
 | Target audience mismatch | 13+ declared; no child-oriented graphics in listing |
 | Real player names licensing | ⚠️ **Still open** — see roadmap; consider fictional dataset before wide release |
