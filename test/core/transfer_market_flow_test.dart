@@ -197,17 +197,96 @@ void main() {
     expect(negotiation.message, contains('agent'));
   });
 
-  testWidgets('the window shuts the market to everyone but free agents',
+  testWidgets('a deal agreed with the window shut joins when it reopens',
       (tester) async {
     final db = stubLeagueDatabase(10);
-    final session = _sessionFor(db, matchday: 15);
+    // Matchday 6 is shut: the summer window closes after 3 and the winter one
+    // opens on 7 for this 18-round stub schedule.
+    final session = _sessionFor(db, matchday: 6);
     final container = await _containerFor(db, session);
     final target = _target(db);
+    final seller = target.currentTeam;
+    final budgetBefore = session.team.transferBudget;
+
+    expect(TransferWindow.of(session.season).isOpen, isFalse);
 
     await _run(tester, container, (ref) => startTransferTalk(ref, target));
+    final asking = session.transferDesk.forPlayer(target.id)!.askingPrice;
+    await _run(tester, container, (ref) => submitBid(ref, target, asking));
+    final agreed = session.transferDesk.forPlayer(target.id)!;
+    expect(agreed.stage, DealStage.feeAgreed);
 
-    expect(session.transferDesk.forPlayer(target.id), isNull);
-    expect(container.read(transferBlockReasonProvider), contains('window'));
+    final demand = agreed.wageDemand;
+    await _run(
+      tester,
+      container,
+      (ref) => offerPersonalTerms(
+        ref,
+        target,
+        wage: demand,
+        bonus: 0,
+        years: 4,
+        role: 'First Team',
+      ),
+    );
+
+    // Agreed and paid for, but not registered while the window is shut.
+    expect(session.team.squad.any((p) => p.id == target.id), isFalse);
+    expect(session.team.transferBudget, budgetBefore - asking,
+        reason: 'the fee is committed at agreement');
+    expect(session.transferDesk.pendingSignings, hasLength(1));
+    final pending = session.transferDesk.pendingSignings.single;
+    expect(pending.playerId, target.id);
+    expect(pending.fromClub, seller);
+    expect(pending.fee, asking);
+    expect(pending.committed, asking);
+    expect(pending.wage, demand);
+    expect(session.transferDesk.forPlayer(target.id)!.stage,
+        DealStage.pendingRegistration);
+    expect(session.transferDesk.ledger, isEmpty,
+        reason: 'the move is recorded when he actually arrives');
+    expect(session.transferDesk.news.first.title, contains('agrees to join'));
+
+    // The agreed deal cannot be negotiated (or paid for) a second time.
+    await _run(tester, container, (ref) => startTransferTalk(ref, target));
+    expect(container.read(transferBlockReasonProvider),
+        contains('already agreed'));
+    expect(session.transferDesk.pendingSignings, hasLength(1));
+
+    // Matchday 7 reopens the winter window: the registration goes through.
+    final reopened = CareerSession(
+      manager: session.manager,
+      team: session.team,
+      season: _season(7),
+      transferDesk: session.transferDesk,
+    );
+    expect(TransferWindow.of(reopened.season).isOpen, isTrue);
+
+    await _run(tester, container, (ref) => advanceTransferDesk(ref, reopened));
+
+    expect(session.team.squad.any((p) => p.id == target.id), isTrue);
+    expect(session.transferDesk.pendingSignings, isEmpty);
+    expect(session.team.transferBudget, budgetBefore - asking,
+        reason: 'the committed fee must not be charged twice');
+    final move = session.transferDesk.ledger.single;
+    expect(move.playerId, target.id);
+    expect(move.toClub, session.team.name);
+    expect(move.matchday, 7);
+    expect(target.currentTeam, session.team.name);
+    expect(target.weeklyWage, demand);
+    expect(target.contractExpiry?.year, 2030);
+    expect(
+      db.teams
+          .firstWhere((t) => t.name == seller)
+          .squad
+          .any((p) => p.id == target.id),
+      isFalse,
+      reason: 'the selling club lets him go on registration',
+    );
+    expect(
+      session.transferDesk.news.any((n) => n.title.contains('registers')),
+      isTrue,
+    );
   });
 
   testWidgets('three bids collapse the deal', (tester) async {
@@ -400,6 +479,35 @@ void main() {
     expect(copy.counterOffer, 11000000);
     expect(copy.rivalClub, 'Club 5');
     expect(copy.stage, DealStage.bidding);
+  });
+
+  testWidgets('pending signings survive the desk JSON', (tester) async {
+    final desk = TransferDesk(pendingSignings: [
+      const PendingSigning(
+        playerId: 42,
+        playerName: 'Kai Vega',
+        fromClub: 'Club 1',
+        fee: 5000000,
+        bonus: 500000,
+        wage: 30000,
+        contractYears: 4,
+        role: 'First Team',
+        agreedYear: 2026,
+        agreedMatchday: 6,
+      ),
+    ]);
+
+    final restored = TransferDesk.fromJson(desk.toJson());
+
+    expect(restored.pendingSignings, hasLength(1));
+    final pending = restored.pendingSignings.single;
+    expect(pending.playerId, 42);
+    expect(pending.playerName, 'Kai Vega');
+    expect(pending.fromClub, 'Club 1');
+    expect(pending.committed, 5500000);
+    expect(pending.wage, 30000);
+    expect(pending.contractYears, 4);
+    expect(pending.agreedMatchday, 6);
   });
 
   testWidgets('the ledger replays a signing onto a fresh database',

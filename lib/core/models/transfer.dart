@@ -74,7 +74,7 @@ class TransferWindow {
       isOpen ? (closesAtMatchday - season.currentMatchday).clamp(0, 99) : 0;
 
   String banner(SeasonState season) {
-    if (!isOpen) return 'Window closed · only free agents can sign';
+    if (!isOpen) return 'Window closed · signings join when it reopens';
     if (isDeadlineDay) return 'DEADLINE DAY · window shuts after this matchday';
     final left = daysLeft(season);
     return '$label · ${left == 1 ? '1 matchday' : '$left matchdays'} left';
@@ -91,6 +91,10 @@ enum DealStage {
 
   /// A signing has been completed (kept briefly for the news feed).
   completed,
+
+  /// The deal is agreed and the fee is committed, but the window is shut, so
+  /// registration waits for it to reopen.
+  pendingRegistration,
 
   /// The selling club ended talks, or the manager walked away.
   collapsed,
@@ -473,6 +477,71 @@ class LoanDeal {
       );
 }
 
+/// A transfer agreed while the window is shut.
+///
+/// The fee (and signing bonus) already left the transfer budget when the deal
+/// was agreed — that is what stops the same money being spent twice while the
+/// manager waits. The player himself joins as soon as a window reopens.
+class PendingSigning {
+  const PendingSigning({
+    required this.playerId,
+    required this.playerName,
+    required this.fromClub,
+    required this.fee,
+    required this.bonus,
+    required this.wage,
+    required this.contractYears,
+    required this.role,
+    required this.agreedYear,
+    required this.agreedMatchday,
+  });
+
+  final int playerId;
+  final String playerName;
+  final String fromClub;
+
+  /// The pure fee, as recorded in the ledger and the news.
+  final int fee;
+
+  /// The signing bonus, committed with the fee.
+  final int bonus;
+  final int wage;
+  final int contractYears;
+  final String role;
+  final int agreedYear;
+  final int agreedMatchday;
+
+  /// Everything already deducted from the transfer budget.
+  int get committed => fee + bonus;
+
+  Map<String, dynamic> toJson() => {
+        'playerId': playerId,
+        'playerName': playerName,
+        'fromClub': fromClub,
+        'fee': fee,
+        'bonus': bonus,
+        'wage': wage,
+        'contractYears': contractYears,
+        'role': role,
+        'agreedYear': agreedYear,
+        'agreedMatchday': agreedMatchday,
+      };
+
+  factory PendingSigning.fromJson(Map<String, dynamic> json) =>
+      PendingSigning(
+        playerId: (json['playerId'] as num?)?.toInt() ?? 0,
+        playerName: json['playerName'] as String? ?? 'A player',
+        fromClub: json['fromClub'] as String? ?? '',
+        fee: (json['fee'] as num?)?.toInt() ?? 0,
+        bonus: (json['bonus'] as num?)?.toInt() ?? 0,
+        wage: (json['wage'] as num?)?.toInt() ?? 0,
+        contractYears: (json['contractYears'] as num?)?.toInt() ?? 1,
+        role: json['role'] as String? ?? 'Squad Player',
+        agreedYear: (json['agreedYear'] as num?)?.toInt() ?? 0,
+        agreedMatchday: (json['agreedMatchday'] as num?)?.toInt() ?? 0,
+      );
+}
+
 /// Everything the transfer desk owns, persisted inside the career blob.
 class TransferDesk {
   TransferDesk({
@@ -481,11 +550,13 @@ class TransferDesk {
     List<TransferNewsItem>? news,
     List<TransferMove>? ledger,
     List<LoanDeal>? loans,
+    List<PendingSigning>? pendingSignings,
   })  : negotiations = negotiations ?? [],
         incomingBids = incomingBids ?? [],
         news = news ?? [],
         ledger = ledger ?? [],
-        loans = loans ?? [];
+        loans = loans ?? [],
+        pendingSignings = pendingSignings ?? [];
 
   final List<TransferNegotiation> negotiations;
   final List<IncomingBid> incomingBids;
@@ -496,6 +567,9 @@ class TransferDesk {
 
   /// Loans that are still running (either direction).
   final List<LoanDeal> loans;
+
+  /// Deals agreed outside a window, waiting for the next one to open.
+  final List<PendingSigning> pendingSignings;
 
   /// Bumped by every mutation so the (expensive) market listing index can be
   /// cached without going stale after a signing or a rival move.
@@ -542,6 +616,9 @@ class TransferDesk {
         'news': [for (final item in news) item.toJson()],
         'ledger': [for (final move in ledger) move.toJson()],
         'loans': [for (final loan in loans) loan.toJson()],
+        'pendingSignings': [
+          for (final pending in pendingSignings) pending.toJson(),
+        ],
       };
 
   factory TransferDesk.fromJson(Map<String, dynamic> json) {
@@ -568,6 +645,11 @@ class TransferDesk {
       loans: [
         for (final loan in (json['loans'] as List? ?? const []))
           if (loan is Map) LoanDeal.fromJson(Map<String, dynamic>.from(loan)),
+      ],
+      pendingSignings: [
+        for (final pending in (json['pendingSignings'] as List? ?? const []))
+          if (pending is Map)
+            PendingSigning.fromJson(Map<String, dynamic>.from(pending)),
       ],
     );
   }

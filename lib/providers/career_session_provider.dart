@@ -397,6 +397,10 @@ Future<bool> tryRestoreCareer(WidgetRef ref) async {
     // stays grown.
     DevelopmentService.applyWorldGrowth(db.players, session.worldGrowth);
 
+    // A save restored with a window open registers anything that was waiting
+    // for it, so the squad matches the money already spent on it.
+    completePendingSignings(ref, session);
+
     ref.read(careerSessionProvider.notifier).state = session;
     return true;
   } catch (e, st) {
@@ -929,6 +933,9 @@ bool unsettledOf(Player player) =>
 /// day is announced once. Everything is seeded from the player id and the
 /// matchday, so reloading a save cannot reroll a hijack.
 void advanceTransferDesk(WidgetRef ref, CareerSession session) {
+  // A new matchday can reopen the window: deals agreed behind a shut one
+  // register the moment it is open again.
+  completePendingSignings(ref, session);
   final desk = session.transferDesk;
   final season = session.season;
   const service = TransferMarketService();
@@ -1955,6 +1962,37 @@ void repairClubFinances(CareerSession session) {
   );
 }
 
+/// The reason a signing cannot go through, or null when it can.
+///
+/// Shared by immediate signings and deals agreed outside a window, so money
+/// committed in June passes exactly the checks a signing in August would.
+String? _signingRefusal(
+  WidgetRef ref,
+  CareerSession session,
+  int fee,
+  double newWage,
+) {
+  if (fee > session.team.transferBudget) {
+    return 'The fee is more than the transfer budget.';
+  }
+  // The wage ceiling is the board's, not FFP's: it applies whether or not
+  // enforcement is switched on, because it is what the club can actually pay.
+  final refusal = wageCeilingRefusal(session.team, newWage);
+  if (refusal != null) return refusal;
+  if (ref.read(ffpEnabledProvider)) {
+    final projectedBill =
+        FinancialService().calculateWageBill(session.team) + newWage;
+    final revenue = projectedSeasonRevenue(session);
+    if (revenue <= 0 || projectedBill / revenue > ffpWageRatioLimit) {
+      return 'FFP rules block this: the wage bill would reach '
+          '${(projectedBill / (revenue <= 0 ? 1 : revenue) * 100).round()}% '
+          'of projected revenue, above the '
+          '${(ffpWageRatioLimit * 100).round()}% limit.';
+    }
+  }
+  return null;
+}
+
 /// Buys a player from the transfer market if the budget allows.
 ///
 /// When FFP enforcement is on, a signing that would push the wage bill past
@@ -1969,32 +2007,12 @@ bool buyPlayer(
 }) {
   final session = ref.read(careerSessionProvider);
   if (session == null) return false;
-  if (fee > session.team.transferBudget) {
-    ref.read(transferBlockReasonProvider.notifier).state =
-        'The fee is more than the transfer budget.';
-    return false;
-  }
-
   final finance = FinancialService();
   final newWage = wage?.toDouble() ?? player.ovr * 1200.0;
-  // The wage ceiling is the board's, not FFP's: it applies whether or not
-  // enforcement is switched on, because it is what the club can actually pay.
-  final refusal = wageCeilingRefusal(session.team, newWage);
+  final refusal = _signingRefusal(ref, session, fee, newWage);
   if (refusal != null) {
     ref.read(transferBlockReasonProvider.notifier).state = refusal;
     return false;
-  }
-  if (ref.read(ffpEnabledProvider)) {
-    final projectedBill = finance.calculateWageBill(session.team) + newWage;
-    final revenue = projectedSeasonRevenue(session);
-    if (revenue <= 0 || projectedBill / revenue > ffpWageRatioLimit) {
-      ref.read(transferBlockReasonProvider.notifier).state =
-          'FFP rules block this: the wage bill would reach '
-          '${(projectedBill / (revenue <= 0 ? 1 : revenue) * 100).round()}% '
-          'of projected revenue, above the '
-          '${(ffpWageRatioLimit * 100).round()}% limit.';
-      return false;
-    }
   }
 
   ref.read(transferBlockReasonProvider.notifier).state = null;
@@ -2022,6 +2040,127 @@ bool buyPlayer(
   _bumpState(ref);
   _persist(ref, session);
   return true;
+}
+
+/// Agrees a signing while the window is shut.
+///
+/// The fee and bonus leave the transfer budget now — that is what stops the
+/// same money being spent twice while the manager waits — and the player joins
+/// at the next window. Returns false with the reason left in
+/// [transferBlockReasonProvider] when the board or FFP refuses the deal.
+bool commitPendingSigning(
+  WidgetRef ref,
+  Player player,
+  int fee, {
+  required int bonus,
+  required int wage,
+  required int contractYears,
+  required String role,
+  required String sellerClub,
+}) {
+  final session = ref.read(careerSessionProvider);
+  if (session == null) return false;
+  final refusal = _signingRefusal(ref, session, fee + bonus, wage.toDouble());
+  if (refusal != null) {
+    ref.read(transferBlockReasonProvider.notifier).state = refusal;
+    return false;
+  }
+  ref.read(transferBlockReasonProvider.notifier).state = null;
+  session.team.transferBudget -= fee + bonus;
+  session.transferDesk.pendingSignings.add(PendingSigning(
+    playerId: player.id,
+    playerName: player.name,
+    fromClub: sellerClub,
+    fee: fee,
+    bonus: bonus,
+    wage: wage,
+    contractYears: contractYears,
+    role: role,
+    agreedYear: session.season.currentYear,
+    agreedMatchday: session.season.currentMatchday,
+  ));
+  _bumpState(ref);
+  _persist(ref, session);
+  return true;
+}
+
+/// Registers every deal agreed outside a window once one is open again.
+///
+/// The calendar is the trigger: this runs whenever a matchday is banked, so a
+/// deal agreed with the window shut goes through on the day it reopens. If a
+/// rival has moved the player in the meantime, the committed money is returned
+/// instead of vanishing with him.
+void completePendingSignings(WidgetRef ref, CareerSession session) {
+  final pendingDeals = [...session.transferDesk.pendingSignings];
+  if (pendingDeals.isEmpty) return;
+  final season = session.season;
+  final window = TransferWindow.of(season);
+  if (!window.isOpen) return;
+  final db = ref.read(playerDatabaseProvider).valueOrNull;
+  if (db == null) return;
+
+  final finance = FinancialService();
+  final desk = session.transferDesk;
+  desk.pendingSignings.clear();
+
+  for (final pending in pendingDeals) {
+    final player =
+        db.players.where((p) => p.id == pending.playerId).firstOrNull;
+    if (player == null || player.currentTeam != pending.fromClub) {
+      session.team.transferBudget += pending.committed;
+      desk.addNews(TransferNewsItem(
+        type: 'signing',
+        title: '${pending.playerName} will not arrive',
+        body: 'The deal agreed on matchday ${pending.agreedMatchday} can no '
+            'longer be registered. '
+            '${TransferMarketService.money(pending.committed)} has been '
+            'returned to the transfer budget.',
+        matchday: season.currentMatchday,
+      ));
+      continue;
+    }
+
+    player
+      ..currentTeam = session.team.name
+      ..weeklyWage = pending.wage.toDouble()
+      ..requestedTransfer = false;
+    player.contractExpiry =
+        DateTime(season.currentYear + pending.contractYears, 6, 30);
+    player.transferValue = finance.calculateTransferValue(
+      player,
+      seasonYear: season.currentYear,
+    );
+    player.hiddenAttributes.remove('transferListed');
+    for (final team in db.teams) {
+      team.squad.removeWhere((p) => p.id == pending.playerId);
+    }
+    if (!session.team.squad.any((p) => p.id == pending.playerId)) {
+      session.team.squad.add(player);
+    }
+    desk.recordMove(TransferMove(
+      playerId: pending.playerId,
+      playerName: pending.playerName,
+      fromClub: pending.fromClub,
+      toClub: session.team.name,
+      kind: pending.fee == 0 ? 'free' : 'permanent',
+      fee: pending.fee,
+      wage: pending.wage,
+      year: season.currentYear,
+      matchday: season.currentMatchday,
+    ));
+    desk.addNews(TransferNewsItem(
+      type: 'signing',
+      title: '${pending.playerName} registers for ${session.team.name}',
+      body: 'The ${window.label.toLowerCase()} is open, so the deal agreed '
+          'behind the closed window goes through: '
+          '${TransferMarketService.money(pending.fee)}'
+          '${pending.bonus > 0 ? ' plus a ${TransferMarketService.money(pending.bonus)} signing bonus' : ''}'
+          ' · ${pending.contractYears}-year deal · '
+          '${TransferMarketService.money(pending.wage)}/wk.',
+      matchday: season.currentMatchday,
+    ));
+  }
+  desk.touch();
 }
 
 /// Sells a player from the user's squad.
@@ -2485,6 +2624,9 @@ SeasonOutcome? rollIntoNextSeason(WidgetRef ref) {
         '${_compactEuros(kitTotal)} a year.',
     matchday: 0,
   ));
+  // The summer window is open from matchday 0: deals agreed after the winter
+  // shut registers now.
+  completePendingSignings(ref, updated);
   ref.read(careerSessionProvider.notifier).state = updated;
   ref.read(lastMatchResultProvider.notifier).state = null;
   _persist(ref, updated);

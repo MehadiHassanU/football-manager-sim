@@ -697,7 +697,8 @@ class _MarketList extends ConsumerWidget {
                   itemBuilder: (context, index) {
                     final listing = market[index];
                     final player = listing.player;
-                    final signable = listing.freeAgent || window.isOpen;
+                    final waitsForWindow =
+                        !window.isOpen && !listing.freeAgent;
                     final affordable =
                         listing.askingPrice <= session.team.transferBudget;
                     return _PlayerRow(
@@ -722,10 +723,15 @@ class _MarketList extends ConsumerWidget {
                             text: 'Contract ${listing.contractYear}',
                             color: Theme.of(context).colorScheme.secondary,
                           ),
-                        if (signable && !affordable)
+                        if (!affordable)
                           _Tag(
                             text: 'Over budget',
                             color: Theme.of(context).colorScheme.error,
+                          ),
+                        if (waitsForWindow)
+                          _Tag(
+                            text: 'Joins at window',
+                            color: Colors.amber,
                           ),
                       ],
                       onTap: () => showPlayerDetailSheet(context, player),
@@ -740,7 +746,7 @@ class _MarketList extends ConsumerWidget {
                           active: shortlist.contains(player.id),
                           onPressed: () => toggleShortlist(ref, player.id),
                         ),
-                        if (signable &&
+                        if (window.isOpen &&
                             TransferMarketService()
                                 .loanAvailable(player, listing.seller))
                           _RowAction(
@@ -752,13 +758,13 @@ class _MarketList extends ConsumerWidget {
                           ),
                         _RowAction(
                           icon: Icons.gavel,
-                          tooltip: signable
-                              ? 'Open talks'
-                              : 'Window shut — only free agents can sign',
-                          active: signable,
-                          onPressed: signable
-                              ? () => openTransferBid(context, ref, player)
-                              : null,
+                          tooltip: waitsForWindow
+                              ? 'Open talks — he joins when the window '
+                                  'reopens'
+                              : 'Open talks',
+                          active: true,
+                          onPressed: () =>
+                              openTransferBid(context, ref, player),
                         ),
                       ],
                     );
@@ -1110,6 +1116,8 @@ class _StageChip extends StatelessWidget {
       DealStage.bidding => ('Bidding', Colors.blue),
       DealStage.feeAgreed => ('Fee agreed', AppTheme.pitchGreen),
       DealStage.completed => ('Signed', AppTheme.pitchGreen),
+      DealStage.pendingRegistration =>
+        ('Joins at window', Colors.amber),
       DealStage.collapsed => ('Collapsed', Colors.red),
       DealStage.hijacked => ('Hijacked', Colors.orange),
     };
@@ -1582,18 +1590,17 @@ Future<void> openTransferBid(
 ) async {
   final session = ref.read(careerSessionProvider);
   if (session == null) return;
-  const service = TransferMarketService();
-  final season = session.season;
   final desk = session.transferDesk;
 
   var negotiation = desk.forPlayer(player.id);
-  final free = service.isFreeAgent(player, season.currentYear);
-  final window = TransferWindow.of(season);
-  if (!service.canSign(window, free)) {
-    _snack(context, 'The window is shut. Only free agents can be signed.');
+  // Talks are open in any window now. When the window is shut the deal is
+  // agreed on the spot and the player registers as soon as it reopens.
+  if (negotiation != null &&
+      (negotiation.stage == DealStage.pendingRegistration ||
+          negotiation.stage == DealStage.completed)) {
+    _snack(context, 'The deal for ${player.name} is already agreed.');
     return;
   }
-
   if (negotiation == null) {
     if (!startTransferTalk(ref, player)) {
       _snack(context,
@@ -1873,7 +1880,10 @@ Future<void> openTermsDialog(
   _snack(
     context,
     signed
-        ? '${player.name} signed!'
+        ? (session.transferDesk.pendingSignings
+                .any((p) => p.playerId == player.id)
+            ? '${player.name} agreed — he joins when the window reopens.'
+            : '${player.name} signed!')
         : ref.read(transferBlockReasonProvider) ?? 'He turned you down.',
   );
 }

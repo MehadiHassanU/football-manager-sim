@@ -27,7 +27,10 @@ int _transferSeed(Player player, int matchday) =>
 /// The asking price is public, the reservation price is not, and a rival club
 /// may already be circling — the manager only finds out after bidding starts.
 /// Returns false and sets [transferBlockReasonProvider] when the move is
-/// impossible (window shut, already talking, no seller).
+/// impossible (already talking, no seller).
+///
+/// Talks can open at any point in the calendar. With the window shut a deal
+/// can still be agreed, but the player registers when it reopens.
 bool startTransferTalk(WidgetRef ref, Player player) {
   final session = ref.read(careerSessionProvider);
   if (session == null) return false;
@@ -35,14 +38,15 @@ bool startTransferTalk(WidgetRef ref, Player player) {
   final season = session.season;
   final seller = _sellerOf(ref, player);
   final free = service.isFreeAgent(player, season.currentYear);
-  final window = TransferWindow.of(season);
 
-  if (!service.canSign(window, free)) {
+  final open = session.transferDesk.forPlayer(player.id);
+  if (open != null &&
+      (open.stage == DealStage.pendingRegistration ||
+          open.stage == DealStage.completed)) {
     ref.read(transferBlockReasonProvider.notifier).state =
-        'The window is shut. Only free agents can be signed right now.';
+        'The deal for ${player.name} is already agreed.';
     return false;
   }
-  final open = session.transferDesk.forPlayer(player.id);
   if (open != null && open.isActive) {
     ref.read(transferBlockReasonProvider.notifier).state =
         'Talks for ${player.name} are already open.';
@@ -124,6 +128,13 @@ BidResult? submitBid(WidgetRef ref, Player player, int fee) {
   const service = TransferMarketService();
 
   var negotiation = session.transferDesk.forPlayer(player.id);
+  if (negotiation != null &&
+      (negotiation.stage == DealStage.pendingRegistration ||
+          negotiation.stage == DealStage.completed)) {
+    ref.read(transferBlockReasonProvider.notifier).state =
+        'The deal for ${player.name} is already agreed.';
+    return null;
+  }
   if (negotiation == null || !negotiation.isActive) {
     if (!startTransferTalk(ref, player)) return null;
     negotiation = session.transferDesk.forPlayer(player.id);
@@ -287,34 +298,55 @@ bool offerPersonalTerms(
     return false;
   }
 
-  // The actual move goes through buyPlayer so the budget and FFP checks are
-  // exactly the same ones a direct signing uses. The fee passed in includes
-  // the signing bonus because both come out of the transfer budget.
-  if (!buyPlayer(
+  // A free agent can be registered outside a window, so only a contracted
+  // player's move has to wait. Either way the budget and FFP checks run now:
+  // money committed in June must not be spendable twice in July.
+  final window = TransferWindow.of(session.season);
+  final joinsNow =
+      window.isOpen || service.isFreeAgent(player, session.season.currentYear);
+  if (joinsNow) {
+    // The actual move goes through buyPlayer so the budget and FFP checks are
+    // exactly the same ones a direct signing uses. The fee passed in includes
+    // the signing bonus because both come out of the transfer budget.
+    if (!buyPlayer(
+      ref,
+      player,
+      fee + bonus,
+      wage: wage,
+      contractYears: years,
+    )) {
+      return false;
+    }
+  } else if (!commitPendingSigning(
     ref,
     player,
-    fee + bonus,
+    fee,
+    bonus: bonus,
     wage: wage,
     contractYears: years,
+    role: role,
+    sellerClub: negotiation.sellerClub,
   )) {
     return false;
   }
   player.requestedTransfer = false;
   player.hiddenAttributes.remove('transferListed');
-  desk.recordMove(TransferMove(
-    playerId: player.id,
-    playerName: player.name,
-    fromClub: negotiation.sellerClub,
-    toClub: session.team.name,
-    kind: fee == 0 ? 'free' : 'permanent',
-    fee: fee,
-    wage: wage,
-    year: session.season.currentYear,
-    matchday: session.season.currentMatchday,
-  ));
+  if (joinsNow) {
+    desk.recordMove(TransferMove(
+      playerId: player.id,
+      playerName: player.name,
+      fromClub: negotiation.sellerClub,
+      toClub: session.team.name,
+      kind: fee == 0 ? 'free' : 'permanent',
+      fee: fee,
+      wage: wage,
+      year: session.season.currentYear,
+      matchday: session.season.currentMatchday,
+    ));
+  }
 
   desk.replace(negotiation.copyWith(
-    stage: DealStage.completed,
+    stage: joinsNow ? DealStage.completed : DealStage.pendingRegistration,
     agreedFee: fee,
     agreedWage: wage,
     agreedBonus: bonus,
@@ -324,11 +356,19 @@ bool offerPersonalTerms(
   ));
   desk.addNews(TransferNewsItem(
     type: 'signing',
-    title: '${player.name} signs for ${session.team.name}',
-    body: 'Fee ${TransferMarketService.money(fee)}'
-        '${bonus > 0 ? ' · bonus ${TransferMarketService.money(bonus)}' : ''}'
-        ' · $years-year deal · ${TransferMarketService.money(wage)}/wk. '
-        '${role == 'Key Player' ? 'He arrives as a key player.' : ''}',
+    title: joinsNow
+        ? '${player.name} signs for ${session.team.name}'
+        : '${player.name} agrees to join ${session.team.name}',
+    body: joinsNow
+        ? 'Fee ${TransferMarketService.money(fee)}'
+            '${bonus > 0 ? ' · bonus ${TransferMarketService.money(bonus)}' : ''}'
+            ' · $years-year deal · ${TransferMarketService.money(wage)}/wk. '
+            '${role == 'Key Player' ? 'He arrives as a key player.' : ''}'
+        : 'The window is shut, so he registers as soon as it reopens. '
+            'Fee ${TransferMarketService.money(fee)}'
+            '${bonus > 0 ? ' · bonus ${TransferMarketService.money(bonus)}' : ''}'
+            ' · $years-year deal · ${TransferMarketService.money(wage)}/wk. '
+            'The money is already committed from the transfer budget.',
     matchday: session.season.currentMatchday,
   ));
   ref.read(transferBlockReasonProvider.notifier).state = null;
