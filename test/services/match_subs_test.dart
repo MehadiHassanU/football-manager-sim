@@ -183,9 +183,23 @@ void main() {
         final ratings =
             sub.team == 'home' ? match.result.homeRatings : match.result.awayRatings;
         final off = ratings.firstWhere((r) => r.playerName == sub.player);
-        expect(off.started, isTrue, reason: 'he started the match');
-        expect(off.minutes, sub.minute,
-            reason: 'his day ended when the change was made');
+        expect(off.minutes, lessThan(matchMinutes),
+            reason: 'nobody who was withdrawn played the whole match');
+        if (off.started) {
+          expect(off.minutes, sub.minute,
+              reason: 'his day ended when the change was made');
+        } else {
+          // A substitute can be withdrawn again. His minutes run from the
+          // change that brought him on to this one.
+          final arrival = match.result.events.firstWhere(
+            (e) =>
+                e.type == 'sub' &&
+                e.description.startsWith('${sub.player} '),
+            orElse: () => fail('no arrival event for ${sub.player}'),
+          );
+          expect(off.minutes, sub.minute - arrival.minute,
+              reason: 'a substitute only plays until he is taken off again');
+        }
       }
     });
   });

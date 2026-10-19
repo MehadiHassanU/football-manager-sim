@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:football_manager_sim/core/constants/game_constants.dart';
 import 'package:football_manager_sim/core/models/match.dart';
 import 'package:football_manager_sim/screens/match/match_screen.dart';
 import 'package:football_manager_sim/ui/ui.dart';
@@ -37,13 +38,16 @@ void main() {
       MaterialApp(
         theme: AppTheme.dark(),
         home: LiveMatch(
-          result: result,
+          homeTeam: result.homeTeam,
+          awayTeam: result.awayTeam,
           homeGoals: scoreAt(shown, 1).home,
           awayGoals: scoreAt(shown, 1).away,
           minute: 1,
           events: shown,
           homeMomentum: const [],
           awayMomentum: const [],
+          substitutionsLeft: maxSubstitutions,
+          onSubstitutes: () {},
           onHalfTime: () {},
           onSkip: () {},
         ),

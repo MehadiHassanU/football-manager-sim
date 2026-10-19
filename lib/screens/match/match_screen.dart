@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:math';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -89,6 +90,16 @@ List<MatchEvent> applyCommentarySettings(
       away: userIsHome ? null : userTactic,
     );
 
+/// True when [event] must stop a live match the manager is watching.
+///
+/// Only his own side's injuries and dismissals interrupt: the opponent's
+/// knocks are the assistant's problem, and a yellow card never stops play.
+bool pausesUserMatch(MatchEvent event, {required String userTeam}) {
+  if (event.team != userTeam) return false;
+  if (event.isInjury) return true;
+  return event.isCard && event.extraData?['red'] == true;
+}
+
 /// The full-time verdict from the user's point of view.
 ///
 /// Reading the home score line directly made every away win display as
@@ -105,7 +116,11 @@ String fullTimeOutcome({
 }
 
 class MatchScreen extends ConsumerStatefulWidget {
-  const MatchScreen({super.key});
+  const MatchScreen({super.key, this.rng});
+
+  /// Seeds the match engine. Production leaves this null and the engine seeds
+  /// itself; a widget test can pass a fixed seed to replay a known match.
+  final Random? rng;
 
   @override
   ConsumerState<MatchScreen> createState() => _MatchScreenState();
@@ -123,16 +138,31 @@ class _MatchValidationException implements Exception {
 }
 
 class _MatchScreenState extends ConsumerState<MatchScreen> {
-  final _sim = MatchSimulatorService();
   _MatchPhase _phase = _MatchPhase.pre;
   MatchResult? _result;
   int _currentMinute = 0;
+
+  /// The match being played. The engine is driven minute by minute so a
+  /// substitution or a red card changes the rest of the afternoon.
+  MatchSimulation? _simulation;
+  String _homeName = 'Home';
+  String _awayName = 'Away';
+
+  /// Milliseconds of match clock already played. Kept here rather than read
+  /// from [Timer.tick] so pausing for an injury resumes where it stopped.
+  int _elapsedMs = 0;
+
+  /// The next event the pause rules have not inspected yet.
+  int _checkedEvents = 0;
+
+  /// True while a substitution sheet is open, so a pending pause cannot stack
+  /// a second sheet on top of it.
+  bool _subsSheetOpen = false;
 
   /// Which end the user's club played: the full-time verdict is computed from
   /// his side, not from the home score line.
   bool _userIsHome = true;
   Timer? _ticker;
-  int _eventsShown = 0;
   String? _errorMessage;
 
   /// The penalties verdict for a drawn cup tie, shown on the full-time screen.
@@ -267,8 +297,11 @@ class _MatchScreenState extends ConsumerState<MatchScreen> {
         userIsHome: userIsHome,
         userTactic: session.tactic,
       );
-      final watch = Stopwatch()..start();
-      final result = _sim.simulateMatch(
+      // The match is not played out here: the ticker advances it, which is
+      // what lets the manager change his team mid-match. His side is marked
+      // manual, so injuries pause the game instead of being auto-substituted;
+      // the opponent is left to the assistant.
+      final simulation = MatchSimulation(
         homeGoalkeeper: userIsHome ? userGk : oppGk,
         homeSquad: userIsHome ? userSquad : oppSquad,
         awayGoalkeeper: userIsHome ? oppGk : userGk,
@@ -277,37 +310,23 @@ class _MatchScreenState extends ConsumerState<MatchScreen> {
         awayBench: userIsHome ? oppBench : userBench,
         homeTactic: tactics.home,
         awayTactic: tactics.away,
-      );
-      watch.stop();
-      debugPrint(
-          '[MATCH] Simulation finished in ${watch.elapsedMilliseconds}ms '
-          '(${result.events.length} events, ${result.homeGoals}-${result.awayGoals})');
-
-      // Label the result with the real fixture names, in home/away order.
-      final commentaryOn = ref.read(commentaryEnabledProvider);
-      final labeled = MatchResult(
-        homeTeam: userIsHome ? session.team.name : opponent.name,
-        awayTeam: userIsHome ? opponent.name : session.team.name,
-        homeGoals: result.homeGoals,
-        awayGoals: result.awayGoals,
-        // The full timeline is kept: the live score is derived from the goal
-        // events, and the commentary setting only filters the feed's display.
-        events: result.events,
-        homeRatings: result.homeRatings,
-        awayRatings: result.awayRatings,
-        homeMomentum: result.homeMomentum,
-        awayMomentum: result.awayMomentum,
-        fullTimeCommentary: commentaryOn ? result.fullTimeCommentary : '',
+        manualHome: userIsHome,
+        manualAway: !userIsHome,
+        rng: widget.rng,
       );
 
       if (!mounted) return;
       setState(() {
-        _result = labeled;
+        _homeName = userIsHome ? session.team.name : opponent.name;
+        _awayName = userIsHome ? opponent.name : session.team.name;
+        _simulation = simulation;
         _userIsHome = userIsHome;
+        _result = null;
         _resultApplied = false;
         _phase = _MatchPhase.live;
         _currentMinute = 0;
-        _eventsShown = 0;
+        _elapsedMs = 0;
+        _checkedEvents = 0;
       });
       _startTicker();
     } catch (e, st) {
@@ -321,34 +340,41 @@ class _MatchScreenState extends ConsumerState<MatchScreen> {
     }
   }
 
-  /// Replays the pre-computed result as a live ticker.
+  /// Drives the clock and the simulation together.
   ///
-  /// The displayed minute is driven purely by elapsed ticks
-  /// (`tick / totalTicks * matchMinutes`), so it is guaranteed to reach
-  /// [matchMinutes] and terminate. (The previous formula derived the minute
-  /// from the last commentary event, which is always < 90 — the match could
-  /// never finish and the timer never cancelled.)
+  /// The displayed minute is derived from elapsed real time, while the engine
+  /// is advanced only by whole chunks. A chunk that would overshoot the clock
+  /// is held for the next tick, so events never appear before their minute.
+  /// The elapsed offset lives in [_elapsedMs] rather than in [Timer.tick] so
+  /// pausing for an injury does not rewind or skip the match.
   void _startTicker() {
     _ticker?.cancel();
     final intervalMs = _tickIntervalMs;
-    final totalTicks = (_durationSeconds * 1000 / intervalMs).round();
+    final totalMs = _durationSeconds * 1000;
     debugPrint(
-        '[MATCH] Ticker started ($_durationSeconds}s, ${intervalMs}ms/tick)');
+        '[MATCH] Ticker started ($_durationSeconds s, ${intervalMs}ms/tick)');
     _ticker = Timer.periodic(Duration(milliseconds: intervalMs), (timer) {
-      if (!mounted || _result == null) {
+      final simulation = _simulation;
+      if (!mounted || simulation == null || _resultApplied) {
         timer.cancel();
         return;
       }
-      final minute = ((timer.tick / totalTicks) * matchMinutes)
+      _elapsedMs += intervalMs;
+      final minute = ((_elapsedMs / totalMs) * matchMinutes)
           .floor()
           .clamp(0, matchMinutes);
       setState(() {
         _currentMinute = minute;
-        while (_eventsShown < _result!.events.length &&
-            _result!.events[_eventsShown].minute <= minute) {
-          _eventsShown++;
-        }
+        simulation.advanceTo(minute);
       });
+
+      final pause = _pauseForUserEvent(simulation);
+      if (pause != null) {
+        // Stop the clock where it stands: the manager has a decision to make.
+        timer.cancel();
+        unawaited(_openPauseSheet(pause));
+        return;
+      }
       if (minute >= matchMinutes) {
         timer.cancel();
         _finishMatch();
@@ -356,21 +382,162 @@ class _MatchScreenState extends ConsumerState<MatchScreen> {
     });
   }
 
+  /// The first new injury or sending-off suffered by the manager's side, if
+  /// any, since the last time this was asked.
+  _MatchPause? _pauseForUserEvent(MatchSimulation simulation) {
+    final userTeam = _userIsHome ? 'home' : 'away';
+    while (_checkedEvents < simulation.events.length) {
+      final event = simulation.events[_checkedEvents++];
+      if (!pausesUserMatch(event, userTeam: userTeam)) continue;
+      return _MatchPause(event: event, redCard: !event.isInjury);
+    }
+    return null;
+  }
+
+  /// Stops the match and lets the manager react to his own bad news.
+  ///
+  /// An injury leaves the player on the pitch until the manager decides: the
+  /// sheet offers a replacement or "carry on". A sending-off has already
+  /// removed the player, so the same sheet is just a chance to rebalance with
+  /// the people still available. Either way the clock stays paused until the
+  /// sheet closes.
+  Future<void> _openPauseSheet(_MatchPause pause) async {
+    if (_subsSheetOpen) return;
+    final simulation = _simulation;
+    if (simulation == null) return;
+    _subsSheetOpen = true;
+    final playerId = pause.event.extraData?['playerId'];
+    final injured = !pause.redCard && playerId != null
+        ? simulation
+            .onPitch(home: _userIsHome)
+            .where((p) => p.id == playerId)
+            .firstOrNull
+        : null;
+    final pick = await _showSubstitutions(
+      headline: pause.redCard
+          ? '${pause.event.player} is sent off'
+          : '${pause.event.player} is injured',
+      message: pause.redCard
+          ? 'The match is paused. You are down to ten — make a change or '
+              'carry on a man short.'
+          : 'The match is paused. Bring on a substitute, or tell him to '
+              'carry on.',
+      forcedOff: injured,
+      playOnLabel: 'Carry on',
+    );
+    _subsSheetOpen = false;
+    if (!mounted) return;
+    if (pick != null) _applySubstitution(pick);
+    if (!mounted || _resultApplied) return;
+    if (_currentMinute >= matchMinutes) {
+      // The injury happened in the last chunk: there is no time left to
+      // restart the clock for, so go straight to the whistle.
+      _finishMatch();
+    } else if (_phase == _MatchPhase.live) {
+      _startTicker();
+    }
+  }
+
+  /// Opens the substitution sheet from the live screen, pausing the clock
+  /// while the manager decides.
+  Future<void> _openSubstitutions() async {
+    final simulation = _simulation;
+    if (simulation == null || _resultApplied || _subsSheetOpen) return;
+    _subsSheetOpen = true;
+    _ticker?.cancel();
+    final left = simulation.substitutionsLeft(home: _userIsHome);
+    final pick = await _showSubstitutions(
+      headline: 'Substitutions',
+      message: left <= 0
+          ? 'All $maxSubstitutions changes have been used.'
+          : '$left of $maxSubstitutions changes left.',
+      playOnLabel: 'Close',
+    );
+    _subsSheetOpen = false;
+    if (!mounted) return;
+    if (pick != null) _applySubstitution(pick);
+    if (!mounted || _resultApplied) return;
+    if (_currentMinute >= matchMinutes) {
+      _finishMatch();
+    } else if (_phase == _MatchPhase.live) {
+      _startTicker();
+    }
+  }
+
+  bool _applySubstitution(_Substitution pick) {
+    final simulation = _simulation;
+    if (simulation == null) return false;
+    final ok = simulation.substitute(
+      home: _userIsHome,
+      off: pick.off,
+      on: pick.on,
+    );
+    if (ok) setState(() {});
+    return ok;
+  }
+
+  Future<_Substitution?> _showSubstitutions({
+    required String headline,
+    required String message,
+    Player? forcedOff,
+    required String playOnLabel,
+  }) {
+    final simulation = _simulation;
+    if (simulation == null) return Future.value();
+    final userHome = _userIsHome;
+    return showModalBottomSheet<_Substitution>(
+      context: context,
+      backgroundColor: Colors.transparent,
+      isScrollControlled: true,
+      builder: (context) => _SubstitutionSheet(
+        headline: headline,
+        message: message,
+        onPitch: simulation.onPitch(home: userHome),
+        bench: [
+          for (final p in simulation.bench(home: userHome))
+            if (!p.isInjured && p.primaryPosition != 'GK') p,
+        ],
+        substitutionsLeft: simulation.substitutionsLeft(home: userHome),
+        forcedOff: forcedOff,
+        playOnLabel: playOnLabel,
+      ),
+    );
+  }
+
   void _finishMatch() {
-    if (_result == null || _resultApplied) return;
+    final simulation = _simulation;
+    if (simulation == null || _resultApplied) return;
     _resultApplied = true;
+    final raw = simulation.finish();
+
+    // Label the result with the real fixture names, in home/away order. The
+    // commentary setting only filters the live feed; the timeline stays whole.
+    final commentaryOn = ref.read(commentaryEnabledProvider);
+    final result = MatchResult(
+      homeTeam: _homeName,
+      awayTeam: _awayName,
+      homeGoals: raw.homeGoals,
+      awayGoals: raw.awayGoals,
+      events: raw.events,
+      homeRatings: raw.homeRatings,
+      awayRatings: raw.awayRatings,
+      homeMomentum: raw.homeMomentum,
+      awayMomentum: raw.awayMomentum,
+      fullTimeCommentary: commentaryOn ? raw.fullTimeCommentary : '',
+    );
+    _result = result;
     debugPrint(
-        '[MATCH] Full time: ${_result!.homeTeam} ${_result!.resultText} ${_result!.awayTeam}');
+        '[MATCH] Full time: ${result.homeTeam} ${result.resultText} ${result.awayTeam}');
 
     final session = ref.read(careerSessionProvider);
     BoardVerdict? verdict;
     if (session != null) {
       // The shootout outcome is carved in the tie's seed, so it is knowable
       // the moment the whistle goes — before the result is applied.
-      _shootout = _shootoutNoteFor(session, _result!);
-      verdict = applyMatchResult(ref, _result!);
-      ref.read(lastMatchResultProvider.notifier).state = _result;
-      ref.read(currentMatchProvider.notifier).state = _result;
+      _shootout = _shootoutNoteFor(session, result);
+      verdict = applyMatchResult(ref, result);
+      ref.read(lastMatchResultProvider.notifier).state = result;
+      ref.read(currentMatchProvider.notifier).state = result;
     }
     if (mounted) {
       setState(() => _phase = _MatchPhase.fullTime);
@@ -410,16 +577,19 @@ class _MatchScreenState extends ConsumerState<MatchScreen> {
   }
 
   void _skipToEnd() {
-    if (_result == null || _resultApplied) return;
+    final simulation = _simulation;
+    if (simulation == null || _resultApplied) return;
     _ticker?.cancel();
+    simulation.advanceTo(matchMinutes);
     setState(() => _currentMinute = matchMinutes);
     _finishMatch();
   }
 
   /// Stores the half-time team talk for the matches still to come.
   ///
-  /// The current match was fully simulated at kick-off and is being replayed
-  /// by the ticker, so nothing said now can reach it — the sheet says so.
+  /// The engine is resumable, but the half-time sheet still only sets the plan
+  /// for the next match: the manager's in-match lever is the substitution
+  /// sheet, which the engine does apply to the remainder.
   void _applyHalfTimeTweak(Tactic tactic) {
     final session = ref.read(careerSessionProvider);
     if (session != null) {
@@ -467,25 +637,25 @@ class _MatchScreenState extends ConsumerState<MatchScreen> {
     };
   }
 
-  /// The live view: only the events whose minute has arrived, and the score
-  /// those events have produced so far.
+  /// The live view: the events generated so far and the score they produced.
   Widget _liveMatch() {
-    final result = _result!;
-    final shown = result.events.take(_eventsShown).toList();
-    final score = scoreAt(shown, _currentMinute);
+    final simulation = _simulation!;
     final feed = applyCommentarySettings(
-      shown,
+      simulation.events,
       enabled: ref.read(commentaryEnabledProvider),
       level: ref.read(commentaryLevelProvider),
     );
     return LiveMatch(
-      result: result,
-      homeGoals: score.home,
-      awayGoals: score.away,
+      homeTeam: _homeName,
+      awayTeam: _awayName,
+      homeGoals: simulation.homeGoals,
+      awayGoals: simulation.awayGoals,
       minute: _currentMinute,
       events: feed,
-      homeMomentum: _momentumAt(result.homeMomentum, _currentMinute),
-      awayMomentum: _momentumAt(result.awayMomentum, _currentMinute),
+      homeMomentum: simulation.homeMomentum,
+      awayMomentum: simulation.awayMomentum,
+      substitutionsLeft: simulation.substitutionsLeft(home: _userIsHome),
+      onSubstitutes: _openSubstitutions,
       onHalfTime: _openHalfTime,
       onSkip: _skipToEnd,
     );
@@ -507,13 +677,194 @@ class _MatchScreenState extends ConsumerState<MatchScreen> {
       ),
     );
   }
+}
 
-  List<double> _momentumAt(List<double> series, int minute) {
-    if (series.isEmpty) return [];
-    final upTo = ((minute / matchMinutes) * series.length)
-        .floor()
-        .clamp(1, series.length);
-    return series.sublist(0, upTo);
+/// An injury or dismissal the manager must react to.
+class _MatchPause {
+  const _MatchPause({required this.event, required this.redCard});
+
+  final MatchEvent event;
+  final bool redCard;
+}
+
+/// The change a manager picked in the substitution sheet.
+class _Substitution {
+  const _Substitution({required this.off, required this.on});
+
+  final Player off;
+  final Player on;
+}
+
+/// Bottom sheet for a change.
+///
+/// Two shapes share one sheet. With [forcedOff] set — the injury pause — the
+/// player coming off is fixed and each available substitute is a one-tap
+/// choice. Without it the manager picks both halves of the change, which is
+/// what the live "Subs" button opens. [playOnLabel] closes without a change.
+class _SubstitutionSheet extends StatefulWidget {
+  const _SubstitutionSheet({
+    required this.headline,
+    required this.message,
+    required this.onPitch,
+    required this.bench,
+    required this.substitutionsLeft,
+    required this.playOnLabel,
+    this.forcedOff,
+  });
+
+  final String headline;
+  final String message;
+  final List<Player> onPitch;
+  final List<Player> bench;
+  final int substitutionsLeft;
+  final String playOnLabel;
+  final Player? forcedOff;
+
+  @override
+  State<_SubstitutionSheet> createState() => _SubstitutionSheetState();
+}
+
+class _SubstitutionSheetState extends State<_SubstitutionSheet> {
+  Player? _off;
+  Player? _on;
+
+  @override
+  void initState() {
+    super.initState();
+    _off = widget.forcedOff;
+  }
+
+  bool get _canSubmit =>
+      widget.substitutionsLeft > 0 &&
+      _off != null &&
+      _on != null &&
+      _off!.id != _on!.id;
+
+  List<Player> get _benchByQuality => [...widget.bench]
+    ..sort((a, b) => b.ovr.compareTo(a.ovr));
+
+  void _submit() {
+    if (!_canSubmit) return;
+    Navigator.of(context).pop(_Substitution(off: _off!, on: _on!));
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final forced = widget.forcedOff;
+    final available = widget.substitutionsLeft > 0 && widget.bench.isNotEmpty;
+
+    return SafeArea(
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Material(
+          color: theme.colorScheme.surface,
+          borderRadius: BorderRadius.circular(20),
+          clipBehavior: Clip.antiAlias,
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(20, 16, 20, 20),
+            child: ConstrainedBox(
+              constraints: BoxConstraints(
+                maxHeight: MediaQuery.of(context).size.height * 0.72,
+              ),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  Text(widget.headline, style: theme.textTheme.titleLarge),
+                  const SizedBox(height: 6),
+                  Text(widget.message, style: theme.textTheme.bodySmall),
+                  const SizedBox(height: 16),
+                  if (!available)
+                    Text(
+                      widget.substitutionsLeft <= 0
+                          ? 'No substitutions left.'
+                          : 'No fit outfield substitutes are available.',
+                      style: theme.textTheme.bodyMedium,
+                    )
+                  else if (forced != null) ...[
+                    Text('Bring on for ${forced.name}',
+                        style: theme.textTheme.labelLarge),
+                    const SizedBox(height: 4),
+                    Flexible(
+                      child: SingleChildScrollView(
+                        child: Column(
+                          children: [
+                            for (final player in _benchByQuality)
+                              ListTile(
+                                dense: true,
+                                contentPadding: EdgeInsets.zero,
+                                title: Text(player.name),
+                                subtitle: Text(
+                                    '${player.primaryPosition} · ${player.ovr} OVR'),
+                                trailing:
+                                    const Icon(Icons.add_circle_outline),
+                                onTap: () => Navigator.of(context).pop(
+                                  _Substitution(off: forced, on: player),
+                                ),
+                              ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ] else ...[
+                    DropdownButtonFormField<Player>(
+                      key: const ValueKey('sub-off'),
+                      initialValue: _off,
+                      isExpanded: true,
+                      decoration: const InputDecoration(labelText: 'Off'),
+                      items: [
+                        for (final p in widget.onPitch)
+                          DropdownMenuItem(
+                            key: ValueKey('sub-off-${p.id}'),
+                            value: p,
+                            child: Text(
+                              '${p.name} · ${p.primaryPosition} · ${p.ovr} OVR',
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                          ),
+                      ],
+                      onChanged: (p) => setState(() => _off = p),
+                    ),
+                    const SizedBox(height: 12),
+                    DropdownButtonFormField<Player>(
+                      key: const ValueKey('sub-on'),
+                      initialValue: _on,
+                      isExpanded: true,
+                      decoration: const InputDecoration(labelText: 'On'),
+                      items: [
+                        for (final p in _benchByQuality)
+                          DropdownMenuItem(
+                            key: ValueKey('sub-on-${p.id}'),
+                            value: p,
+                            child: Text(
+                              '${p.name} · ${p.primaryPosition} · ${p.ovr} OVR',
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                          ),
+                      ],
+                      onChanged: (p) => setState(() => _on = p),
+                    ),
+                    const SizedBox(height: 16),
+                    PrimaryButton(
+                      key: const ValueKey('sub-confirm'),
+                      label: 'Make substitution',
+                      icon: Icons.swap_horiz,
+                      onPressed: _canSubmit ? _submit : null,
+                    ),
+                  ],
+                  const SizedBox(height: 8),
+                  TextButton(
+                    onPressed: () => Navigator.of(context).pop(),
+                    child: Text(widget.playOnLabel),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
   }
 }
 
@@ -642,18 +993,22 @@ class _MatchError extends StatelessWidget {
 class LiveMatch extends StatelessWidget {
   const LiveMatch({
     super.key,
-    required this.result,
+    required this.homeTeam,
+    required this.awayTeam,
     required this.homeGoals,
     required this.awayGoals,
     required this.minute,
     required this.events,
     required this.homeMomentum,
     required this.awayMomentum,
+    required this.substitutionsLeft,
+    required this.onSubstitutes,
     required this.onHalfTime,
     required this.onSkip,
   });
 
-  final MatchResult result;
+  final String homeTeam;
+  final String awayTeam;
 
   /// The score at [minute] — not the final score, which is what used to be
   /// printed from kick-off.
@@ -663,6 +1018,10 @@ class LiveMatch extends StatelessWidget {
   final List<MatchEvent> events;
   final List<double> homeMomentum;
   final List<double> awayMomentum;
+
+  /// How many changes the manager has left this match.
+  final int substitutionsLeft;
+  final VoidCallback onSubstitutes;
   final VoidCallback onHalfTime;
   final VoidCallback onSkip;
 
@@ -673,6 +1032,11 @@ class LiveMatch extends StatelessWidget {
       appBar: AppBar(
         title: const Text('Live'),
         actions: [
+          TextButton.icon(
+            onPressed: onSubstitutes,
+            icon: const Icon(Icons.swap_horiz, size: 18),
+            label: Text('Subs $substitutionsLeft'),
+          ),
           if (minute < matchMinutes)
             TextButton(
               onPressed: onSkip,
@@ -690,7 +1054,7 @@ class LiveMatch extends StatelessWidget {
                 children: [
                   Expanded(
                     child: Text(
-                      result.homeTeam,
+                      homeTeam,
                       style: theme.textTheme.titleMedium,
                       textAlign: TextAlign.right,
                       overflow: TextOverflow.ellipsis,
@@ -710,7 +1074,7 @@ class LiveMatch extends StatelessWidget {
                   ),
                   Expanded(
                     child: Text(
-                      result.awayTeam,
+                      awayTeam,
                       style: theme.textTheme.titleMedium,
                       overflow: TextOverflow.ellipsis,
                     ),
@@ -921,8 +1285,8 @@ class _HalfTimeSheet extends StatelessWidget {
                 style: Theme.of(context).textTheme.titleLarge),
             const SizedBox(height: 6),
             Text(
-              'Tonight\'s XI and plan were locked in at kick-off. What you set '
-              'here is in place for your next match.',
+              'Saved for your next match. Changes to the side on the pitch '
+              'are made with the Subs button.',
               style: Theme.of(context).textTheme.bodySmall,
             ),
             const SizedBox(height: 16),

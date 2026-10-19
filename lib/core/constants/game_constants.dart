@@ -28,7 +28,7 @@ const int averageRetireMax = 40;
 const int matchMinutes = 90;
 const int normalMatchSpeedSeconds = 30;
 const int fastMatchSpeedSeconds = 15;
-const int maxSubstitutions = 3;
+const int maxSubstitutions = 5;
 
 /// Outfield substitutes a squad can name, when it has that many spare.
 const int benchSize = 7;

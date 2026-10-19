@@ -6,6 +6,12 @@ import '../models/tactics.dart';
 import '../constants/game_constants.dart';
 import '../constants/tactic_definitions.dart';
 
+/// Simulates football matches.
+///
+/// [simulateMatch] plays a whole match in one call, which is what every
+/// fixture the manager is not watching needs. [MatchSimulation] is the same
+/// engine behind a pause button: the live screen drives it a minute at a time
+/// so a substitution or a sending-off can change the rest of the match.
 class MatchSimulatorService {
   final Random rng;
 
@@ -21,244 +27,19 @@ class MatchSimulatorService {
     Tactic? homeTactic,
     Tactic? awayTactic,
   }) {
-    final events = <MatchEvent>[];
-    final homeMomentum = <double>[];
-    final awayMomentum = <double>[];
-
-    final homePower = _calcTeamPower(homeSquad, homeGoalkeeper, homeTactic);
-    final awayPower = _calcTeamPower(awaySquad, awayGoalkeeper, awayTactic);
-    // A small home advantage: enough to break an even tie on paper, never
-    // enough to make an away fixture feel decided before kick-off.
-    final homeEdge = (homePower + 1.5) - awayPower;
-
-    // Who is on the pitch right now, who is still on the bench, and the
-    // minutes everyone has played. Substitutions update these in place, so
-    // the rest of the simulation works off the current eleven.
-    final homeSide = _MatchSide(homeSquad, homeBench);
-    final awaySide = _MatchSide(awaySquad, awayBench);
-
-    var homeGoals = 0;
-    var awayGoals = 0;
-    // Goal and assist tallies are keyed by player id, never by name: two
-    // players in one squad can share a name, and a shared name would merge
-    // their days into one line of the ratings sheet.
-    final homeScorers = <int, int>{};
-    final awayScorers = <int, int>{};
-    final homeAssists = <int, int>{};
-    final awayAssists = <int, int>{};
-
-    events.add(MatchEvent(
-      type: 'kickoff',
-      team: 'home',
-      player: '',
-      description: 'Kick-off. The match is under way.',
-      minute: 0,
-      homeScore: 0,
-      awayScore: 0,
-    ));
-
-    var minute = 0;
-    var halfTimeAdded = false;
-
-    while (minute < matchMinutes) {
-      minute += _getMinuteIncrement(homeTactic, awayTactic);
-      if (minute > matchMinutes) minute = matchMinutes;
-
-      if (!halfTimeAdded && minute > 45) {
-        events.add(MatchEvent(
-          type: 'halfTime',
-          team: 'home',
-          player: '',
-          description: 'Half-time: $homeGoals - $awayGoals.',
-          minute: 45,
-          homeScore: homeGoals,
-          awayScore: awayGoals,
-        ));
-        halfTimeAdded = true;
-      }
-
-      // Momentum follows the stronger side: the favourite spends more of the
-      // match on the front foot, but the underdog still gets spells.
-      final double momentum;
-      if (homeEdge >= 0) {
-        momentum = 0.5 + rng.nextDouble() * 0.5;
-      } else {
-        momentum = rng.nextDouble() * 0.5;
-      }
-      homeMomentum.add(momentum * 100);
-      awayMomentum.add((1 - momentum) * 100);
-
-      final homeAttacks = rng.nextDouble() < momentum;
-      final attackSide = homeAttacks ? homeSide : awaySide;
-      final defenceSide = homeAttacks ? awaySide : homeSide;
-      final attackSquad = attackSide.onPitch;
-      final defenceSquad = defenceSide.onPitch;
-      final attackRating = homeAttacks ? homePower + 1.5 : awayPower;
-      final defenceRating = homeAttacks ? awayPower : homePower;
-      final team = homeAttacks ? 'home' : 'away';
-      final attacker = _randomPlayer(attackSquad);
-      final defender = _randomPlayer(defenceSquad);
-
-      // Expected goals rise with the attacking side's edge. The normal tempo
-      // gives roughly 22 chunks, so ~0.10 per chunk lands a full match near
-      // the 2-3 goal range instead of the goalless run the first draft had.
-      final goalChance =
-          (0.10 + (attackRating - defenceRating) * 0.0025).clamp(0.03, 0.18);
-      final roll = rng.nextDouble();
-
-      if (roll < goalChance) {
-        final assist =
-            rng.nextDouble() < 0.7 ? _randomPlayer(attackSquad) : null;
-        final assistName = (assist != null && assist.name != attacker.name)
-            ? assist.name
-            : null;
-        final assistId = assistName == null ? null : assist!.id;
-        if (homeAttacks) {
-          homeGoals++;
-        } else {
-          awayGoals++;
-        }
-        (homeAttacks ? homeScorers : awayScorers)
-            .update(attacker.id, (v) => v + 1, ifAbsent: () => 1);
-        if (assistId != null) {
-          (homeAttacks ? homeAssists : awayAssists)
-              .update(assistId, (v) => v + 1, ifAbsent: () => 1);
-        }
-        events.add(MatchEvent(
-          type: 'goal',
-          team: team,
-          player: attacker.name,
-          description: _goalDescription(attacker.name, assistName),
-          minute: minute,
-          homeScore: homeGoals,
-          awayScore: awayGoals,
-          extraData: assistName == null ? null : {'assist': assistName},
-        ));
-        // One decisive moment per chunk keeps the feed readable at speed.
-        continue;
-      }
-
-      if (roll < goalChance + 0.16) {
-        final saved = rng.nextDouble() < 0.5;
-        events.add(MatchEvent(
-          type: saved ? 'save' : 'chance',
-          team: team,
-          player: attacker.name,
-          description: saved
-              ? '${attacker.name} forces a save from the goalkeeper.'
-              : '${attacker.name} drags a shot wide of the post.',
-          minute: minute,
-        ));
-      } else if (roll < goalChance + 0.30) {
-        // Fouls are the bulk of the tackling in a match; a fraction of them
-        // are late enough to be booked. The card is shown at the same minute
-        // as the foul that earned it.
-        final cardRoll = rng.nextDouble();
-        if (cardRoll < 0.16) {
-          events.add(MatchEvent(
-            type: 'card',
-            team: team == 'home' ? 'away' : 'home',
-            player: defender.name,
-            description: 'Yellow card: ${defender.name} is booked for '
-                'bringing down ${attacker.name}.',
-            minute: minute,
-          ));
-        } else {
-          events.add(MatchEvent(
-            type: 'foul',
-            team: team == 'home' ? 'away' : 'home',
-            player: defender.name,
-            description: '${defender.name} fouls ${attacker.name}.',
-            minute: minute,
-          ));
-        }
-      } else if (roll < goalChance + 0.38) {
-        events.add(MatchEvent(
-          type: 'corner',
-          team: team,
-          player: attacker.name,
-          description: '${attacker.name} wins a corner.',
-          minute: minute,
-        ));
-      } else if (roll < goalChance + 0.46) {
-        events.add(MatchEvent(
-          type: 'offside',
-          team: team,
-          player: attacker.name,
-          description: '${attacker.name} is caught offside.',
-          minute: minute,
-        ));
-      } else if (roll < goalChance + 0.50) {
-        events.add(MatchEvent(
-          type: 'injury',
-          team: team,
-          player: attacker.name,
-          description: '${attacker.name} is down and needs treatment.',
-          minute: minute,
-          // The physio resolves the victim by id: a name can belong to two
-          // players, and the wrong twin must not be sent to the treatment room.
-          extraData: {'playerId': attacker.id},
-        ));
-        // A knock that stops play usually ends the player's afternoon: the
-        // freshest substitute comes on right away, unless the bench is spent.
-        final replacement = _benchPick(attackSide);
-        if (replacement != null &&
-            _substitute(attackSide, attacker, replacement, minute)) {
-          events.add(MatchEvent(
-            type: 'sub',
-            team: team,
-            player: attacker.name,
-            description: '${replacement.name} replaces ${attacker.name}, '
-                'who cannot continue.',
-            minute: minute,
-          ));
-        }
-      } else {
-        events.add(MatchEvent(
-          type: 'commentary',
-          team: team,
-          player: '',
-          description: _generateCommentary(minute, homeGoals, awayGoals),
-          minute: minute,
-        ));
-      }
-
-      // Fresh legs in the closing half-hour: the bench sends the freshest
-      // substitute on for the most tired body on the pitch. The old feed
-      // invented a substitute from the XI purely to fill the event.
-      if (minute >= 55) {
-        _freshnessPass(homeSide, 'home', minute, events);
-        _freshnessPass(awaySide, 'away', minute, events);
-      }
-    }
-
-    final homeRatings = _generateRatings(
-      homeGoalkeeper,
-      homeSide,
-      goals: homeScorers,
-      assists: homeAssists,
-      goalDifference: homeGoals - awayGoals,
+    final simulation = MatchSimulation(
+      homeGoalkeeper: homeGoalkeeper,
+      homeSquad: homeSquad,
+      awayGoalkeeper: awayGoalkeeper,
+      awaySquad: awaySquad,
+      homeBench: homeBench,
+      awayBench: awayBench,
+      homeTactic: homeTactic,
+      awayTactic: awayTactic,
+      rng: rng,
     );
-    final awayRatings = _generateRatings(
-      awayGoalkeeper,
-      awaySide,
-      goals: awayScorers,
-      assists: awayAssists,
-      goalDifference: awayGoals - homeGoals,
-    );
-
-    return MatchResult(
-      homeTeam: 'Home',
-      awayTeam: 'Away',
-      homeGoals: homeGoals,
-      awayGoals: awayGoals,
-      events: events,
-      homeRatings: homeRatings,
-      awayRatings: awayRatings,
-      homeMomentum: homeMomentum,
-      awayMomentum: awayMomentum,
-      fullTimeCommentary: 'Full-time: $homeGoals - $awayGoals',
-    );
+    simulation.advanceTo(matchMinutes);
+    return simulation.finish();
   }
 
   /// Simulates a match between two clubs from overall squad strength alone.
@@ -299,13 +80,479 @@ class MatchSimulatorService {
     // into rival fixtures and biased every simulated match a goal low.
     return k;
   }
+}
 
-  int _getMinuteIncrement(Tactic? home, Tactic? away) {
-    if ((home?.tempo ?? Tempo.normal) == Tempo.fast ||
-        (away?.tempo ?? Tempo.normal) == Tempo.fast) {
-      return rng.nextInt(3) + 1;
+/// One match that can be played a chunk at a time.
+///
+/// The engine used to pre-compute the whole ninety minutes at kick-off and the
+/// screen merely replayed the events. That made mid-match changes impossible:
+/// the manager could watch his side lose its shape, but any substitute he
+/// picked would only ever play in the next match. Here the clock is owned by
+/// the caller: [advanceTo] plays every chunk that finishes by the requested
+/// minute, and between calls the manager can [substitute] players. The rest of
+/// the match is then simulated with the eleven actually on the pitch, and a
+/// red card leaves a side a man down for the remainder.
+///
+/// Chunks are kept whole so pausing never changes the dice: a chunk that
+/// would run past the requested minute is left pending, with its minute
+/// increment already drawn, and taken on the next [advanceTo]. Playing the
+/// whole match in one call therefore uses exactly the same random numbers in
+/// exactly the same order as a match played in a hundred pieces.
+class MatchSimulation {
+  MatchSimulation({
+    required this.homeGoalkeeper,
+    required List<Player> homeSquad,
+    required this.awayGoalkeeper,
+    required List<Player> awaySquad,
+    List<Player> homeBench = const [],
+    List<Player> awayBench = const [],
+    Tactic? homeTactic,
+    Tactic? awayTactic,
+    Random? rng,
+    this.manualHome = false,
+    this.manualAway = false,
+  })  : _rng = rng ?? Random(),
+        _homeTactic = homeTactic,
+        _awayTactic = awayTactic,
+        _home = _MatchSide(homeSquad, homeBench, manualSubs: manualHome),
+        _away = _MatchSide(awaySquad, awayBench, manualSubs: manualAway) {
+    _refreshPowers();
+    events.add(MatchEvent(
+      type: 'kickoff',
+      team: 'home',
+      player: '',
+      description: 'Kick-off. The match is under way.',
+      minute: 0,
+      homeScore: 0,
+      awayScore: 0,
+    ));
+  }
+
+  final Player homeGoalkeeper;
+  final Player awayGoalkeeper;
+
+  /// A side managed by the user takes no automatic substitutions: the match
+  /// pauses instead and the manager decides. The opponent is always managed by
+  /// the assistant, and [MatchSimulatorService.simulateMatch] leaves both sides
+  /// to the assistant.
+  final bool manualHome;
+  final bool manualAway;
+
+  final Tactic? _homeTactic;
+  final Tactic? _awayTactic;
+  final Random _rng;
+  final _MatchSide _home;
+  final _MatchSide _away;
+
+  final List<MatchEvent> events = [];
+  final List<double> homeMomentum = [];
+  final List<double> awayMomentum = [];
+
+  int _minute = 0;
+  int? _pendingStep;
+  bool _halfTimeAdded = false;
+
+  double _homePower = 50;
+  double _awayPower = 50;
+  double _homeEdge = 0;
+
+  int _homeGoals = 0;
+  int _awayGoals = 0;
+  // Goal and assist tallies are keyed by player id, never by name: two
+  // players in one squad can share a name, and a shared name would merge
+  // their days into one line of the ratings sheet.
+  final Map<int, int> _homeScorers = {};
+  final Map<int, int> _awayScorers = {};
+  final Map<int, int> _homeAssists = {};
+  final Map<int, int> _awayAssists = {};
+
+  MatchResult? _result;
+
+  int get minute => _minute;
+  int get homeGoals => _homeGoals;
+  int get awayGoals => _awayGoals;
+
+  /// True once the clock has reached full time — not merely once [finish] has
+  /// been called, so the screen can stop the ticker first.
+  bool get isFinished => _minute >= matchMinutes;
+
+  int substitutionsUsed({required bool home}) => _sideOf(home).subs;
+
+  int substitutionsLeft({required bool home}) =>
+      maxSubstitutions - _sideOf(home).subs;
+
+  /// The outfield players currently on the pitch.
+  List<Player> onPitch({required bool home}) =>
+      List.unmodifiable(_sideOf(home).onPitch);
+
+  /// The substitutes still available, injured ones included: the manager may
+  /// pick anyone, and the engine refuses a body that cannot play.
+  List<Player> bench({required bool home}) =>
+      List.unmodifiable(_sideOf(home).bench);
+
+  /// The players sent off, in the order they went.
+  List<Player> sentOff({required bool home}) =>
+      List.unmodifiable(_sideOf(home).sentOff);
+
+  _MatchSide _sideOf(bool home) => home ? _home : _away;
+
+  /// Plays on until the clock reaches [targetMinute], or full time.
+  ///
+  /// Every chunk whose end minute falls inside the target is processed; a
+  /// chunk that would overshoot is deferred to the next call. Deferring it
+  /// keeps events at or before the displayed minute, and the step is stored so
+  /// no random number is drawn twice or out of order.
+  void advanceTo(int targetMinute) {
+    if (isFinished) return;
+    final target = targetMinute.clamp(_minute, matchMinutes);
+    while (_minute < matchMinutes) {
+      final step = _pendingStep ??= _minuteIncrement();
+      if (_minute + step > target && target < matchMinutes) break;
+      _pendingStep = null;
+      _minute = min(matchMinutes, _minute + step);
+      _playChunk();
     }
-    return rng.nextInt(5) + 2;
+  }
+
+  /// Brings [on] into the match for [off].
+  ///
+  /// Returns false when the change is illegal: no changes left, a player who
+  /// is not on the pitch, a substitute who is not on the bench or cannot play
+  /// (an injured man or a keeper, since keepers are never changed mid-match).
+  bool substitute({
+    required bool home,
+    required Player off,
+    required Player on,
+  }) {
+    if (isFinished) return false;
+    final side = _sideOf(home);
+    if (side.subs >= maxSubstitutions) return false;
+    if (!side.onPitch.any((p) => p.id == off.id)) return false;
+    if (!side.bench.any((p) => p.id == on.id)) return false;
+    if (on.isInjured || on.primaryPosition == 'GK') return false;
+    if (!_substitute(side, off, on, _minute)) return false;
+    events.add(MatchEvent(
+      type: 'sub',
+      team: home ? 'home' : 'away',
+      player: off.name,
+      description: '${on.name} replaces ${off.name}.',
+      minute: _minute,
+    ));
+    _refreshPowers();
+    return true;
+  }
+
+  /// Plays any remaining minutes and builds the final result. Idempotent: the
+  /// full-time screen can call it again without rerolling ratings.
+  MatchResult finish() {
+    final cached = _result;
+    if (cached != null) return cached;
+    if (!isFinished) advanceTo(matchMinutes);
+
+    final homeRatings = _generateRatings(
+      homeGoalkeeper,
+      _home,
+      goals: _homeScorers,
+      assists: _homeAssists,
+      goalDifference: _homeGoals - _awayGoals,
+    );
+    final awayRatings = _generateRatings(
+      awayGoalkeeper,
+      _away,
+      goals: _awayScorers,
+      assists: _awayAssists,
+      goalDifference: _awayGoals - _homeGoals,
+    );
+
+    final result = MatchResult(
+      homeTeam: 'Home',
+      awayTeam: 'Away',
+      homeGoals: _homeGoals,
+      awayGoals: _awayGoals,
+      events: events,
+      homeRatings: homeRatings,
+      awayRatings: awayRatings,
+      homeMomentum: homeMomentum,
+      awayMomentum: awayMomentum,
+      fullTimeCommentary: 'Full-time: $_homeGoals - $_awayGoals',
+    );
+    _result = result;
+    return result;
+  }
+
+  // ---------------------------------------------------------------------------
+  // The engine
+  // ---------------------------------------------------------------------------
+
+  void _playChunk() {
+    if (!_halfTimeAdded && _minute > 45) {
+      events.add(MatchEvent(
+        type: 'halfTime',
+        team: 'home',
+        player: '',
+        description: 'Half-time: $_homeGoals - $_awayGoals.',
+        minute: 45,
+        homeScore: _homeGoals,
+        awayScore: _awayGoals,
+      ));
+      _halfTimeAdded = true;
+    }
+
+    // Momentum follows the stronger side: the favourite spends more of the
+    // match on the front foot, but the underdog still gets spells.
+    final double momentum;
+    if (_homeEdge >= 0) {
+      momentum = 0.5 + _rng.nextDouble() * 0.5;
+    } else {
+      momentum = _rng.nextDouble() * 0.5;
+    }
+    homeMomentum.add(momentum * 100);
+    awayMomentum.add((1 - momentum) * 100);
+
+    final homeAttacks = _rng.nextDouble() < momentum;
+    final attackSide = homeAttacks ? _home : _away;
+    final defenceSide = homeAttacks ? _away : _home;
+    final attackSquad = attackSide.onPitch;
+    final defenceSquad = defenceSide.onPitch;
+    // A side can be reduced by red cards, never emptied: at most a handful of
+    // players can go, and the caller validates an XI at kick-off. Guard anyway
+    // so a pathological squad cannot crash the match.
+    if (attackSquad.isEmpty || defenceSquad.isEmpty) return;
+
+    final attackRating = homeAttacks ? _homePower + 1.5 : _awayPower;
+    final defenceRating = homeAttacks ? _awayPower : _homePower;
+    final team = homeAttacks ? 'home' : 'away';
+    final attacker = _randomPlayer(attackSquad);
+    final defender = _randomPlayer(defenceSquad);
+
+    // Expected goals rise with the attacking side's edge. The normal tempo
+    // gives roughly 22 chunks, so ~0.10 per chunk lands a full match near
+    // the 2-3 goal range instead of the goalless run the first draft had.
+    final goalChance =
+        (0.10 + (attackRating - defenceRating) * 0.0025).clamp(0.03, 0.18);
+    final roll = _rng.nextDouble();
+
+    if (roll < goalChance) {
+      final assist =
+          _rng.nextDouble() < 0.7 ? _randomPlayer(attackSquad) : null;
+      final assistName = (assist != null && assist.name != attacker.name)
+          ? assist.name
+          : null;
+      final assistId = assistName == null ? null : assist!.id;
+      if (homeAttacks) {
+        _homeGoals++;
+      } else {
+        _awayGoals++;
+      }
+      (homeAttacks ? _homeScorers : _awayScorers)
+          .update(attacker.id, (v) => v + 1, ifAbsent: () => 1);
+      if (assistId != null) {
+        (homeAttacks ? _homeAssists : _awayAssists)
+            .update(assistId, (v) => v + 1, ifAbsent: () => 1);
+      }
+      events.add(MatchEvent(
+        type: 'goal',
+        team: team,
+        player: attacker.name,
+        description: _goalDescription(attacker.name, assistName),
+        minute: _minute,
+        homeScore: _homeGoals,
+        awayScore: _awayGoals,
+        extraData: assistName == null ? null : {'assist': assistName},
+      ));
+      // One decisive moment per chunk keeps the feed readable at speed.
+      return;
+    }
+
+    if (roll < goalChance + 0.16) {
+      final saved = _rng.nextDouble() < 0.5;
+      events.add(MatchEvent(
+        type: saved ? 'save' : 'chance',
+        team: team,
+        player: attacker.name,
+        description: saved
+            ? '${attacker.name} forces a save from the goalkeeper.'
+            : '${attacker.name} drags a shot wide of the post.',
+        minute: _minute,
+      ));
+      _lateSubstitutions();
+      return;
+    }
+
+    if (roll < goalChance + 0.30) {
+      // Fouls are the bulk of the tackling in a match; a fraction of them
+      // are late enough to be booked. The card is shown at the same minute
+      // as the foul that earned it. Most cards are yellow, a small slice are
+      // straight reds, and a second yellow is a dismissal too.
+      final cardRoll = _rng.nextDouble();
+      final defenceTeam = homeAttacks ? 'away' : 'home';
+      if (cardRoll < 0.03) {
+        _sendOff(
+          defenceSide,
+          defender,
+          defenceTeam,
+          straightRed: true,
+          attacker: attacker,
+        );
+      } else if (cardRoll < 0.18) {
+        final previous = defenceSide.bookings[defender.id] ?? 0;
+        if (previous > 0) {
+          _sendOff(
+            defenceSide,
+            defender,
+            defenceTeam,
+            secondYellow: true,
+            attacker: attacker,
+          );
+        } else {
+          defenceSide.bookings[defender.id] = 1;
+          events.add(MatchEvent(
+            type: 'card',
+            team: defenceTeam,
+            player: defender.name,
+            description: 'Yellow card: ${defender.name} is booked for '
+                'bringing down ${attacker.name}.',
+            minute: _minute,
+            extraData: {'playerId': defender.id, 'red': false},
+          ));
+        }
+      } else {
+        events.add(MatchEvent(
+          type: 'foul',
+          team: defenceTeam,
+          player: defender.name,
+          description: '${defender.name} fouls ${attacker.name}.',
+          minute: _minute,
+        ));
+      }
+      _lateSubstitutions();
+      return;
+    }
+
+    if (roll < goalChance + 0.38) {
+      events.add(MatchEvent(
+        type: 'corner',
+        team: team,
+        player: attacker.name,
+        description: '${attacker.name} wins a corner.',
+        minute: _minute,
+      ));
+    } else if (roll < goalChance + 0.46) {
+      events.add(MatchEvent(
+        type: 'offside',
+        team: team,
+        player: attacker.name,
+        description: '${attacker.name} is caught offside.',
+        minute: _minute,
+      ));
+    } else if (roll < goalChance + 0.50) {
+      events.add(MatchEvent(
+        type: 'injury',
+        team: team,
+        player: attacker.name,
+        description: '${attacker.name} is down and needs treatment.',
+        minute: _minute,
+        // The physio resolves the victim by id: a name can belong to two
+        // players, and the wrong twin must not be sent to the treatment room.
+        extraData: {'playerId': attacker.id},
+      ));
+      // A knock that stops play usually ends the player's afternoon: the
+      // freshest substitute comes on right away, unless the bench is spent.
+      // A manager's own side is different — the live screen pauses and lets
+      // him choose (or tell the player to run it off), so the engine leaves
+      // that side untouched.
+      if (!attackSide.manualSubs) {
+        final replacement = _benchPick(attackSide);
+        if (replacement != null &&
+            _substitute(attackSide, attacker, replacement, _minute)) {
+          events.add(MatchEvent(
+            type: 'sub',
+            team: team,
+            player: attacker.name,
+            description: '${replacement.name} replaces ${attacker.name}, '
+                'who cannot continue.',
+            minute: _minute,
+          ));
+        }
+      }
+    } else {
+      events.add(MatchEvent(
+        type: 'commentary',
+        team: team,
+        player: '',
+        description: _generateCommentary(_minute, _homeGoals, _awayGoals),
+        minute: _minute,
+      ));
+    }
+
+    _lateSubstitutions();
+  }
+
+  /// Fresh legs in the closing half-hour, for any side the assistant manages.
+  ///
+  /// The old feed invented a substitute from the XI purely to fill the event;
+  /// this only sends on a real bench player. A user-managed side is skipped
+  /// because its changes are the manager's to make.
+  void _lateSubstitutions() {
+    if (_minute < 55) return;
+    if (!_home.manualSubs) _freshnessPass(_home, 'home', _minute);
+    if (!_away.manualSubs) _freshnessPass(_away, 'away', _minute);
+  }
+
+  /// Recomputes both sides' strength from the eleven actually on the pitch.
+  ///
+  /// Called after any substitution or dismissal. A side missing a man takes a
+  /// compounding penalty on top of the raw average, so a red card cannot
+  /// paradoxically strengthen a team by removing its weakest starter.
+  void _refreshPowers() {
+    _homePower = _powerOf(_home, homeGoalkeeper, _homeTactic);
+    _awayPower = _powerOf(_away, awayGoalkeeper, _awayTactic);
+    _homeEdge = (_homePower + 1.5) - _awayPower;
+  }
+
+  double _powerOf(_MatchSide side, Player goalkeeper, Tactic? tactic) {
+    final base = _calcTeamPower(side.onPitch, goalkeeper, tactic);
+    final missing = (10 - side.onPitch.length).clamp(0, 10);
+    if (missing == 0) return base;
+    return (base * pow(0.96, missing)).clamp(20.0, 100.0).toDouble();
+  }
+
+  void _sendOff(
+    _MatchSide side,
+    Player player,
+    String team, {
+    bool straightRed = false,
+    bool secondYellow = false,
+    required Player attacker,
+  }) {
+    side.onPitch.removeWhere((p) => p.id == player.id);
+    side.offAt[player.id] = _minute;
+    side.sentOff.add(player);
+    _refreshPowers();
+    events.add(MatchEvent(
+      type: 'card',
+      team: team,
+      player: player.name,
+      description: straightRed
+          ? 'Red card! ${player.name} is sent off for a dangerous challenge '
+              'on ${attacker.name}.'
+          : 'Second yellow card! ${player.name} is sent off after another '
+              'foul on ${attacker.name}.',
+      minute: _minute,
+      extraData: {
+        'playerId': player.id,
+        'red': true,
+        'secondYellow': secondYellow,
+      },
+    ));
+  }
+
+  int _minuteIncrement() {
+    if ((_homeTactic?.tempo ?? Tempo.normal) == Tempo.fast ||
+        (_awayTactic?.tempo ?? Tempo.normal) == Tempo.fast) {
+      return _rng.nextInt(3) + 1;
+    }
+    return _rng.nextInt(5) + 2;
   }
 
   double _calcTeamPower(List<Player> squad, Player gk, Tactic? tactic) {
@@ -339,7 +586,7 @@ class MatchSimulatorService {
   }
 
   Player _randomPlayer(List<Player> squad) {
-    return squad[rng.nextInt(squad.length)];
+    return squad[_rng.nextInt(squad.length)];
   }
 
   String _goalDescription(String scorer, String? assist) {
@@ -351,7 +598,7 @@ class MatchSimulatorService {
       'taps in at the back post',
       'lashes it in off the underside of the bar',
     ];
-    final finish = finishes[rng.nextInt(finishes.length)];
+    final finish = finishes[_rng.nextInt(finishes.length)];
     final assistText = assist == null ? '' : ', assisted by $assist';
     return 'GOAL! $scorer $finish$assistText.';
   }
@@ -397,14 +644,9 @@ class MatchSimulatorService {
   /// The closing-half-hour change: with a small chance, the most tired body
   /// on the pitch makes way for the freshest substitute. No bench (or a
   /// bench that is no fresher) means no change and no event.
-  void _freshnessPass(
-    _MatchSide side,
-    String team,
-    int minute,
-    List<MatchEvent> events,
-  ) {
+  void _freshnessPass(_MatchSide side, String team, int minute) {
     if (side.subs >= maxSubstitutions || side.bench.isEmpty) return;
-    if (rng.nextDouble() >= 0.14) return;
+    if (_rng.nextDouble() >= 0.14) return;
     final onPitch = [...side.onPitch]
       ..sort((a, b) {
         if (a.fitness != b.fitness) return a.fitness.compareTo(b.fitness);
@@ -438,7 +680,7 @@ class MatchSimulatorService {
       // Start from a par performance for the player's quality, then let the
       // result and their direct contributions move it.
       var rating = 6.0 + (p.ovr - 70) / 14.0;
-      rating += rng.nextDouble() * 1.4 - 0.7;
+      rating += _rng.nextDouble() * 1.4 - 0.7;
       if (goalDifference > 0) rating += 0.8;
       if (goalDifference < 0) rating -= 0.5;
       rating += scored * 1.2 + assisted * 0.5;
@@ -465,20 +707,27 @@ class MatchSimulatorService {
       for (final p in side.squad)
         rate(p, side.offAt[p.id] ?? matchMinutes, started: true),
       for (final p in side.subbedOn)
-        rate(p, matchMinutes - (side.onAt[p.id] ?? matchMinutes),
-            started: false),
+        rate(
+          p,
+          // A substitute can himself be withdrawn later, so his day ends at
+          // the second change, not automatically at full time.
+          ((side.offAt[p.id] ?? matchMinutes) -
+                  (side.onAt[p.id] ?? matchMinutes))
+              .clamp(0, matchMinutes),
+          started: false,
+        ),
     ];
   }
 
   String _generateCommentary(int minute, int homeGoals, int awayGoals) {
-    final events = [
+    final lines = [
       'Minute $minute - $homeGoals-$awayGoals. The match continues.',
       'At $minute minutes, still $homeGoals-$awayGoals.',
       'Minute $minute sees the teams still locked at $homeGoals-$awayGoals.',
       '$minute minutes played. Score: $homeGoals-$awayGoals.',
       'The clock ticks past $minute as the score remains $homeGoals-$awayGoals.',
     ];
-    return events[rng.nextInt(events.length)];
+    return lines[_rng.nextInt(lines.length)];
   }
 }
 
@@ -486,7 +735,8 @@ class MatchSimulatorService {
 /// pitch right now, who is left on the bench, and — once the whistle goes —
 /// who played how long.
 class _MatchSide {
-  _MatchSide(List<Player> starters, List<Player> bench)
+  _MatchSide(List<Player> starters, List<Player> bench,
+      {this.manualSubs = false})
       : squad = [...starters],
         onPitch = [...starters],
         bench = [
@@ -495,6 +745,10 @@ class _MatchSide {
           for (final substitute in bench)
             if (!starters.any((s) => s.id == substitute.id)) substitute,
         ];
+
+  /// True when the manager makes this side's changes: automatic substitutions
+  /// (injuries, tired legs) are skipped, because the match will pause instead.
+  final bool manualSubs;
 
   /// The eleven that started, in order; ratings are reported in this order
   /// followed by the substitutes.
@@ -515,6 +769,12 @@ class _MatchSide {
 
   /// The minute a substitute came on, keyed by player id.
   final Map<int, int> onAt = {};
+
+  /// Yellow cards per player id. A second one is a sending-off.
+  final Map<int, int> bookings = {};
+
+  /// Players dismissed, in order.
+  final List<Player> sentOff = [];
 
   /// Changes made so far, against [maxSubstitutions].
   int subs = 0;
