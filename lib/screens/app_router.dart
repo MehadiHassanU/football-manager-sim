@@ -22,7 +22,7 @@ const double kTwoPaneBreakpoint = 600;
 
 /// App router.
 ///
-/// The `/home`, `/squad`, `/match` and `/settings` routes render inside a
+/// The `/home`, `/squad`, `/transfers` and `/settings` routes render inside a
 /// [ShellRoute] that provides the bottom navigation bar (phone) or side rail
 /// (wide layout).
 final appRouter = GoRouter(
@@ -65,14 +65,14 @@ final appRouter = GoRouter(
           path: '/settings',
           builder: (context, state) => const SettingsScreen(),
         ),
-        // Drill-downs from Home. They live inside the ShellRoute so the
-        // navigation bar stays put, and they are reached with `push` rather
-        // than `go` so the system back gesture returns to Home instead of
-        // exiting the app.
         GoRoute(
           path: '/transfers',
           builder: (context, state) => const TransferMarketScreen(),
         ),
+        // Drill-downs from Home. They live inside the ShellRoute so the
+        // navigation bar stays put, and they are reached with `push` rather
+        // than `go` so the system back gesture returns to Home instead of
+        // exiting the app.
         GoRoute(
           path: '/league-table',
           builder: (context, state) => const LeagueTableScreen(),

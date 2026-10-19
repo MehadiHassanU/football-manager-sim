@@ -310,7 +310,9 @@ class _NextMatchHero extends ConsumerWidget {
     if (isComplete) return () => _rollIntoNextSeason(context, ref);
     if (isBye) return () => advancePastBye(ref);
     if (session.season.isWinterBreak) return () => resumeFromWinterBreak(ref);
-    if (hasFixture) return () => context.go('/match');
+    // The match is a drill-down now that the Match tab belongs to Transfers:
+    // push it so the system back gesture returns to the dashboard.
+    if (hasFixture) return () => context.push('/match');
     return null;
   }
 
@@ -620,7 +622,7 @@ class _StatGrid extends StatelessWidget {
                 value: _formatMoney(team.transferBudget),
                 icon: Icons.savings_outlined,
                 color: const Color(0xFF7CDD72),
-                onTap: () => context.push('/transfers'),
+                onTap: () => context.go('/transfers'),
               ),
             ],
           ),
@@ -845,7 +847,7 @@ class _QuickActions extends StatelessWidget {
             const SizedBox(width: 8),
             Expanded(
               child: OutlinedButton.icon(
-                onPressed: () => context.push('/transfers'),
+                onPressed: () => context.go('/transfers'),
                 icon: const Icon(Icons.swap_horiz, size: 18),
                 label: const Text('Transfers'),
               ),

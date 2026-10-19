@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:go_router/go_router.dart';
 
 import '../../core/models/player.dart';
 import '../../core/models/season.dart';
@@ -74,11 +73,6 @@ class _TransferMarketScreenState extends ConsumerState<TransferMarketScreen>
     return Scaffold(
       appBar: AppBar(
         title: const Text('Transfer Hub'),
-        leading: IconButton(
-          icon: const Icon(Icons.arrow_back),
-          tooltip: 'Back to Squad',
-          onPressed: () => context.go('/squad'),
-        ),
         bottom: PreferredSize(
           preferredSize: const Size.fromHeight(46),
           child: TabBar(

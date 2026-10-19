@@ -5,7 +5,7 @@ import '../../ui/ui.dart';
 import '../app_router.dart' show kTwoPaneBreakpoint;
 
 /// Tab destinations in navigation order; system back returns to the previous.
-const _tabOrder = ['/home', '/squad', '/match', '/settings'];
+const _tabOrder = ['/home', '/squad', '/transfers', '/settings'];
 
 class HomeShell extends StatelessWidget {
   const HomeShell({super.key, required this.child});
@@ -15,7 +15,7 @@ class HomeShell extends StatelessWidget {
   static const _destinations = [
     ('/home', Icons.home_outlined, Icons.home, 'Home'),
     ('/squad', Icons.groups_outlined, Icons.groups, 'Squad'),
-    ('/match', Icons.sports_soccer_outlined, Icons.sports_soccer, 'Match'),
+    ('/transfers', Icons.storefront_outlined, Icons.storefront, 'Transfers'),
     ('/settings', Icons.settings_outlined, Icons.settings, 'Settings'),
   ];
 
